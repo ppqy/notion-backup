@@ -44,3 +44,37 @@ Implemented the self-hosted Notion backup MVP with Fastify, React, SQLite, Docke
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Setup UI regression fixes
+
+**Date**: 2026-05-14
+**Task**: Setup UI regression fixes
+**Branch**: `main`
+
+### Summary
+
+Fixed setup validation feedback, key-copy status timing, compact filters, drawer behavior, discovered-content alignment, and backup history detail spacing; recorded related frontend/backend conventions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3ac349e` | (see git log) |
+| `57dad45` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

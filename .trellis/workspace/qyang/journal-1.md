@@ -98,7 +98,10 @@ Completed Trellis bootstrap guideline specs, expanded the project README, and ad
 
 ### Main Changes
 
-(Add details)
+- Added `.github/workflows/docker-publish.yml` for GHCR Docker image publishing.
+- Added `.dockerignore` exclusions for local env files, data, build output, and Trellis metadata.
+- Documented GHCR image tags and Compose deployment usage in English and Chinese READMEs.
+- Added ops spec coverage for container publishing conventions.
 
 ### Git Commits
 
@@ -106,6 +109,42 @@ Completed Trellis bootstrap guideline specs, expanded the project README, and ad
 |------|---------|
 | `2ea5ae5` | (see git log) |
 | `6fa1b14` | (see git log) |
+
+### Testing
+
+- [OK] `npm run lint`
+- [OK] `npm run build`
+- [OK] `npm test`
+- [OK] Workflow YAML parse check
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: Publish Docker image to GHCR
+
+**Date**: 2026-05-14
+**Task**: Publish Docker image to GHCR
+**Branch**: `main`
+
+### Summary
+
+Added a GitHub Actions workflow to build and publish the Docker image to GHCR, documented image tags and deployment usage, and recorded the container publishing convention.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f0cb254` | (see git log) |
 
 ### Testing
 

@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.git
+.trellis
+.agents
+.codex
+data
+coverage
+*.log

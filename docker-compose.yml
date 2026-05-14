@@ -1,0 +1,21 @@
+services:
+  notion-backup:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATA_DIR: /data
+      DATABASE_PATH: /data/app.db
+      BACKUP_ROOT: /data/backups
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-notion_backup_session}
+      SESSION_SECURE: ${SESSION_SECURE:-false}
+    volumes:
+      - notion-backup-data:/data
+    restart: unless-stopped
+
+volumes:
+  notion-backup-data:

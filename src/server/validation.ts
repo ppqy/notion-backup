@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
 import type { SchedulePreset, SelectedContent } from "../shared/types.js";
 import { badRequest } from "./errors.js";
 
@@ -8,17 +9,21 @@ export const loginSchema = z.object({
 });
 
 export const createAdminSchema = z.object({
-  username: z.string().trim().min(3),
-  password: z.string().min(8)
+  username: z.string().trim().min(ADMIN_USERNAME_MIN_LENGTH, `用户名至少 ${ADMIN_USERNAME_MIN_LENGTH} 个字符`),
+  password: z.string().min(PASSWORD_MIN_LENGTH, `密码至少 ${PASSWORD_MIN_LENGTH} 个字符`)
 });
 
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  nextPassword: z.string().min(8)
+  nextPassword: z.string().min(PASSWORD_MIN_LENGTH, `新密码至少 ${PASSWORD_MIN_LENGTH} 个字符`)
 });
 
 export const notionTokenSchema = z.object({
-  token: z.string().trim().min(10)
+  token: z
+    .string()
+    .trim()
+    .min(10)
+    .refine((value) => value.startsWith(NOTION_TOKEN_PREFIX), `Notion token 必须以 ${NOTION_TOKEN_PREFIX} 开头`)
 });
 
 export const manualAddSchema = z.object({
@@ -50,9 +55,13 @@ export type BackupPlanInput = z.infer<typeof backupPlanInputSchema>;
 export function parseBody<T>(schema: z.ZodSchema<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
-    throw badRequest("请求参数无效", result.error.flatten());
+    throw badRequest(localizedValidationMessage(result.error), result.error.flatten());
   }
   return result.data;
+}
+
+function localizedValidationMessage(error: z.ZodError): string {
+  return error.issues.find((issue) => /[\u4e00-\u9fff]/.test(issue.message))?.message || "请求参数无效";
 }
 
 export function cronForPreset(preset: SchedulePreset, custom: string | null | undefined): string | null {

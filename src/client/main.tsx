@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CalendarClock,
@@ -22,6 +22,7 @@ import {
   Trash2,
   XCircle
 } from "lucide-react";
+import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
 import type { BackupPlan, BackupRunDetail, BackupRunStatus, DiscoveredContent, NotionConnectionStatus, SelectedContent } from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
 import "./styles.css";
@@ -134,19 +135,55 @@ function SetupFlow({ onDone }: { onDone: () => Promise<void> }) {
   const [keySource, setKeySource] = useState<"env" | "generated">("generated");
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [message, setMessage] = useState("");
+  const [keyCopyMessage, setKeyCopyMessage] = useState("");
+  const keyCopyMessageTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (keyCopyMessageTimer.current !== null) {
+        window.clearTimeout(keyCopyMessageTimer.current);
+      }
+    };
+  }, []);
 
   async function createFirstAdmin(event: React.FormEvent) {
     event.preventDefault();
     setMessage("");
+    const validationMessage = validateAdminForm(username, password);
+    if (validationMessage) {
+      setMessage(validationMessage);
+      return;
+    }
     try {
       await endpoints.setupAdmin({ username, password });
       const key = await endpoints.setupKey();
       setKeyValue(key.value || "");
       setKeySource(key.source);
+      setKeyCopyMessage("");
       setStep("key");
     } catch (error) {
       setMessage(errorText(error));
     }
+  }
+
+  async function copyKey() {
+    try {
+      await navigator.clipboard.writeText(keyValue);
+      showKeyCopyMessage("已复制");
+    } catch {
+      showKeyCopyMessage("复制失败，请手动复制");
+    }
+  }
+
+  function showKeyCopyMessage(nextMessage: string) {
+    if (keyCopyMessageTimer.current !== null) {
+      window.clearTimeout(keyCopyMessageTimer.current);
+    }
+    setKeyCopyMessage(nextMessage);
+    keyCopyMessageTimer.current = window.setTimeout(() => {
+      setKeyCopyMessage("");
+      keyCopyMessageTimer.current = null;
+    }, 3000);
   }
 
   async function acknowledgeKey() {
@@ -189,9 +226,12 @@ function SetupFlow({ onDone }: { onDone: () => Promise<void> }) {
             <>
               <p className="message info">系统已生成用于加密 Notion token 的密钥。请保存；丢失后需要重新输入 Notion token。</p>
               <code className="secret">{keyValue}</code>
-              <button className="secondary" type="button" onClick={() => void navigator.clipboard.writeText(keyValue)}>
-                复制密钥
-              </button>
+              <div className="button-status-row">
+                <button className="secondary" type="button" onClick={() => void copyKey()}>
+                  复制密钥
+                </button>
+                {keyCopyMessage ? <span className={keyCopyMessage.includes("已") ? "inline-status success" : "inline-status error"}>{keyCopyMessage}</span> : null}
+              </div>
             </>
           ) : (
             <p className="message info">已通过环境变量配置加密密钥。</p>
@@ -392,10 +432,15 @@ function NotionTokenForm({ onSaved }: { onSaved: () => void }) {
   const [busy, setBusy] = useState(false);
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    const normalizedToken = token.trim();
+    if (!normalizedToken.startsWith(NOTION_TOKEN_PREFIX)) {
+      setMessage(`Notion token 必须以 ${NOTION_TOKEN_PREFIX} 开头`);
+      return;
+    }
     setBusy(true);
     setMessage("");
     try {
-      await endpoints.saveToken(token);
+      await endpoints.saveToken(normalizedToken);
       setToken("");
       setMessage("Notion token 已验证并保存");
       onSaved();
@@ -407,7 +452,7 @@ function NotionTokenForm({ onSaved }: { onSaved: () => void }) {
   }
   return (
     <form className="inline-form" onSubmit={save}>
-      <input value={token} onChange={(event) => setToken(event.target.value)} placeholder="secret_..." type="password" />
+      <input value={token} onChange={(event) => setToken(event.target.value)} placeholder={`${NOTION_TOKEN_PREFIX}...`} type="password" />
       <button className="primary" type="submit" disabled={busy}>
         {busy ? <Loader2 className="spin" /> : <Save />}
         保存并验证
@@ -495,7 +540,7 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
         {data.map((item) => {
           const checked = selected?.some((content) => content.objectId === item.objectId) ?? false;
           return (
-            <div className="table-row" key={item.objectId}>
+            <div className={`table-row ${selectable ? "" : "without-selector"}`} key={item.objectId}>
               {selectable ? (
                 <input
                   type="checkbox"
@@ -507,7 +552,7 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
                 <strong>{item.title}</strong>
                 <p className="muted">{item.objectType === "page" ? "页面" : "数据源"} · {item.lastEditedTime ? formatDate(item.lastEditedTime) : "无编辑时间"}</p>
               </div>
-              <span className="muted source">{item.source === "manual" ? "手动" : "搜索"}</span>
+              <span className="muted source">{item.source === "manual" ? "来源：手动添加" : "来源：自动发现"}</span>
             </div>
           );
         })}
@@ -597,8 +642,8 @@ function PlansView() {
         ))}
       </div>
       {editing ? (
-        <div className="drawer">
-          <div className="drawer-panel">
+        <div className="drawer" onClick={() => setEditing(null)}>
+          <div className="drawer-panel" onClick={(event) => event.stopPropagation()}>
             <PlanEditor
               initial={editing === "new" ? defaultPlan : planToPayload(editing)}
               submitLabel={editing === "new" ? "创建计划" : "保存计划"}
@@ -807,8 +852,8 @@ function HistoryView() {
 
 function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () => void }) {
   return (
-    <div className="drawer">
-      <section className="drawer-panel">
+    <div className="drawer" onClick={onClose}>
+      <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
         <div className="section-header">
           <h2>{detail.planName}</h2>
           <button className="ghost" type="button" onClick={onClose}>
@@ -857,6 +902,14 @@ function SecurityView() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setMessage("");
+    if (!currentPassword) {
+      setMessage("请输入当前密码");
+      return;
+    }
+    if (nextPassword.length < PASSWORD_MIN_LENGTH) {
+      setMessage(`新密码至少 ${PASSWORD_MIN_LENGTH} 个字符`);
+      return;
+    }
     try {
       await endpoints.changePassword({ currentPassword, nextPassword });
       setCurrentPassword("");
@@ -886,6 +939,16 @@ function SecurityView() {
       </form>
     </section>
   );
+}
+
+function validateAdminForm(username: string, password: string): string | null {
+  if (username.trim().length < ADMIN_USERNAME_MIN_LENGTH) {
+    return `用户名至少 ${ADMIN_USERNAME_MIN_LENGTH} 个字符`;
+  }
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `密码至少 ${PASSWORD_MIN_LENGTH} 个字符`;
+  }
+  return null;
 }
 
 function PageHeader({ title, action }: { title: string; action?: React.ReactNode }) {

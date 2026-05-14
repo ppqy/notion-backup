@@ -28,9 +28,13 @@ button,
   cursor: pointer;
   display: inline-flex;
   gap: 8px;
+  justify-content: center;
+  justify-self: start;
   min-height: 36px;
   padding: 8px 12px;
   text-decoration: none;
+  white-space: nowrap;
+  width: fit-content;
 }
 
 button svg,
@@ -176,6 +180,28 @@ h2 {
   color: #1d4ed8;
 }
 
+.button-status-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 36px;
+}
+
+.inline-status {
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.inline-status.success {
+  color: #047857;
+}
+
+.inline-status.error {
+  color: #be123c;
+}
+
 .secret {
   background: #111827;
   border-radius: 8px;
@@ -186,12 +212,13 @@ h2 {
 }
 
 .setup-shell {
-  align-items: center;
+  align-content: center;
   display: grid;
   gap: 20px;
+  grid-auto-rows: max-content;
+  justify-items: center;
   min-height: 100vh;
   padding: 32px 16px;
-  place-items: center;
 }
 
 .setup-steps {
@@ -243,6 +270,7 @@ h2 {
   background: transparent;
   color: #cbd5e1;
   justify-content: flex-start;
+  width: 100%;
 }
 
 .nav-button.active,
@@ -311,7 +339,19 @@ h2 {
   margin-bottom: 14px;
 }
 
+.toolbar .search-box {
+  flex: 1 1 260px;
+  max-width: 360px;
+}
+
+.toolbar select {
+  flex: 0 0 auto;
+  min-width: 150px;
+  width: auto;
+}
+
 .search-box {
+  align-items: center;
   background: #ffffff;
   border: 1px solid #ccd3dc;
   border-radius: 8px;
@@ -319,12 +359,27 @@ h2 {
   gap: 8px;
   min-width: 240px;
   padding: 0 10px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.search-box:focus-within {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
 }
 
 .search-box input {
   border: 0;
+  flex: 1;
   min-height: 36px;
+  min-width: 0;
   padding: 0;
+  width: auto;
+}
+
+.search-box input:focus {
+  outline: none;
 }
 
 .search-box svg {
@@ -356,8 +411,19 @@ h2 {
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: auto 1fr auto auto;
   padding: 12px;
+}
+
+.table-row {
+  grid-template-columns: auto 1fr auto;
+}
+
+.table-row.without-selector {
+  grid-template-columns: 1fr auto;
+}
+
+.plan-row {
+  grid-template-columns: 1fr auto auto;
 }
 
 .run-row {
@@ -370,6 +436,7 @@ h2 {
 
 .row-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -440,10 +507,12 @@ h2 {
 }
 
 .drawer-panel {
+  align-content: start;
   background: #ffffff;
   box-shadow: -12px 0 30px rgba(17, 24, 39, 0.16);
   display: grid;
   gap: 16px;
+  grid-auto-rows: max-content;
   height: 100%;
   margin-left: auto;
   max-width: 960px;
@@ -517,5 +586,11 @@ h2 {
   .run-row {
     align-items: start;
     grid-template-columns: 1fr;
+  }
+
+  .toolbar .search-box,
+  .toolbar select {
+    max-width: none;
+    width: 100%;
   }
 }

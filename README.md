@@ -16,6 +16,7 @@ The product UI is Chinese-first. The runtime is a single Fastify server that ser
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start with Docker](#quick-start-with-docker)
+- [Published Docker Images](#published-docker-images)
 - [Local Development](#local-development)
 - [Notion Setup](#notion-setup)
 - [Configuration](#configuration)
@@ -78,6 +79,29 @@ docker compose down
 ```
 
 The Compose setup stores application data in the `notion-backup-data` volume mounted at `/data`.
+
+## Published Docker Images
+
+GitHub Actions publishes Docker images to GitHub Container Registry from `.github/workflows/docker-publish.yml`.
+
+- Pull requests to `main` run quality checks and build the Docker image without pushing it.
+- Pushes to `main` publish `ghcr.io/ppqy/notion-backup:main` and `sha-<short-sha>`.
+- Git tags matching `v*.*.*` publish the tag name, semantic version tags, `latest`, and `sha-<short-sha>`.
+- Manual runs are available from the workflow dispatch button in GitHub Actions.
+
+To deploy a published image, replace the local Compose build with an image reference:
+
+```yaml
+services:
+  notion-backup:
+    image: ghcr.io/ppqy/notion-backup:latest
+```
+
+If the GHCR package remains private, log in before pulling:
+
+```bash
+echo "<github-token>" | docker login ghcr.io -u ppqy --password-stdin
+```
 
 ## Local Development
 

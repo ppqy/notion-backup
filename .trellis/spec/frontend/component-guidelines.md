@@ -47,3 +47,20 @@ Use `src/client/styles.css`. Cards are limited to repeated rows, forms, drawers,
 ```tsx
 <a href={`/api/runs/${run.id}/manifest`}>manifest</a>
 ```
+
+### Convention: Drawer Backdrop Close
+
+Drawer overlays should close when the user clicks outside the drawer panel. Stop propagation on the panel so form interactions do not close it.
+Drawer panel grids should align content at the top (`align-content: start` or equivalent) so detail sections are not stretched across the full viewport height.
+
+```tsx
+<div className="drawer" onClick={onClose}>
+  <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
+    ...
+  </section>
+</div>
+```
+
+### Convention: Compact Filter Toolbars
+
+Toolbar filter controls should stay compact on desktop. Override the global full-width input/select rule inside `.toolbar`, and only expand controls to full width in mobile media queries.

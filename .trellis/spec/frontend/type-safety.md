@@ -47,3 +47,18 @@ function renderRun(run: any) {}
 ```ts
 function renderRun(run: BackupRunSummary) {}
 ```
+
+### Convention: Shared Validation Constants
+
+**What**: Cross-layer validation literals that appear in both UI copy and server schemas live in `src/shared/constants.ts`.
+
+**Why**: Keeping literals shared prevents the UI from advertising one contract while the backend accepts another.
+
+**Example**:
+```tsx
+import { NOTION_TOKEN_PREFIX } from "../shared/constants";
+
+<input placeholder={`${NOTION_TOKEN_PREFIX}...`} />
+```
+
+**Related**: Backend Zod schemas must import the same constant when enforcing the corresponding request contract.

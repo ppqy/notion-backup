@@ -58,7 +58,10 @@ Fixed setup validation feedback, key-copy status timing, compact filters, drawer
 
 ### Main Changes
 
-(Add details)
+- Completed the Trellis bootstrap guideline task by filling backend quality rules and frontend hook/data-fetching conventions.
+- Marked backend/frontend guideline indexes as filled and checked off the bootstrap PRD status list.
+- Expanded the GitHub README with setup, configuration, data layout, script, quality, and security sections.
+- Added `README_CN.md` as the Simplified Chinese README and linked it from the English README.
 
 ### Git Commits
 
@@ -66,6 +69,43 @@ Fixed setup validation feedback, key-copy status timing, compact filters, drawer
 |------|---------|
 | `3ac349e` | (see git log) |
 | `57dad45` | (see git log) |
+
+### Testing
+
+- [OK] `git diff --check`
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 3: Complete bootstrap guidelines and README
+
+**Date**: 2026-05-14
+**Task**: Complete bootstrap guidelines and README
+**Branch**: `main`
+
+### Summary
+
+Completed Trellis bootstrap guideline specs, expanded the project README, and added a Simplified Chinese README.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2ea5ae5` | (see git log) |
+| `6fa1b14` | (see git log) |
 
 ### Testing
 

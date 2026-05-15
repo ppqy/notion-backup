@@ -294,7 +294,10 @@ Implemented data source restore, entry page property restoration, restore report
 
 ### Main Changes
 
-(Add details)
+- Added Notion view list/retrieve wrapper methods and data source `views.json` artifact capture.
+- Gated `data_source_views` manifest capability/artifact kind to backup plans with selected data sources.
+- Added tests for paginated view retrieval, warning artifacts, cancellation propagation, and manifest capability behavior.
+- Updated backend restore artifact contracts for view backup and future restore boundaries.
 
 ### Git Commits
 
@@ -305,7 +308,9 @@ Implemented data source restore, entry page property restoration, restore report
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
 
 ### Status
 
@@ -403,6 +408,39 @@ Added versioned backup manifest metadata, restore options persistence, extensibl
 | Hash | Message |
 |------|---------|
 | `0464ac8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 12: Restore data source view artifacts
+
+**Date**: 2026-05-15
+**Task**: Restore data source view artifacts
+**Branch**: `main`
+
+### Summary
+
+Backed up Notion data source view artifacts with manifest capability gating, warning artifacts, tests, and backend restore contract documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b111cc4` | (see git log) |
 
 ### Testing
 

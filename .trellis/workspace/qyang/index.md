@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~266 | Active |
+| `journal-1.md` | ~306 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-05-15 | Restore Notion data sources and page properties | `ccaa734`, `bbf0ceb` | `main` |
 | 7 | 2026-05-15 | Implement Notion restore MVP | `7453c72`, `1552a3d` | `main` |
 | 6 | 2026-05-15 | Use published Docker image by default | `0264498` | `main` |
 | 5 | 2026-05-15 | Record Notion JSON backup restore research | `e6758a8` | `main` |

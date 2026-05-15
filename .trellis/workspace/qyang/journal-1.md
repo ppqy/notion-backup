@@ -270,3 +270,37 @@ Implemented page-level JSON restore into new Notion pages, added restore report 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Restore Notion data sources and page properties
+
+**Date**: 2026-05-15
+**Task**: Restore Notion data sources and page properties
+**Branch**: `main`
+
+### Summary
+
+Implemented data source restore, entry page property restoration, restore report updates, and backend restore contract documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ccaa734` | (see git log) |
+| `bbf0ceb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

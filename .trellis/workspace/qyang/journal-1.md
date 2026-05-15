@@ -256,7 +256,9 @@ Implemented page-level JSON restore into new Notion pages, added restore report 
 
 ### Main Changes
 
-(Add details)
+- Added versioned backup manifest metadata and compatibility helpers for legacy v1 manifests.
+- Added restore option persistence, summary JSON persistence, and future-safe restore mapping defaults.
+- Added targeted tests for manifest metadata, report compatibility, restore validation defaults, and additive DB migration behavior.
 
 ### Git Commits
 
@@ -267,7 +269,9 @@ Implemented page-level JSON restore into new Notion pages, added restore report 
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
 
 ### Status
 
@@ -366,6 +370,39 @@ Implemented restore of downloaded Notion/local files through Notion File Uploads
 | Hash | Message |
 |------|---------|
 | `7f07862` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 11: Restore model evolution foundation
+
+**Date**: 2026-05-15
+**Task**: Restore model evolution foundation
+**Branch**: `main`
+
+### Summary
+
+Added versioned backup manifest metadata, restore options persistence, extensible restore summary/mappings, compatibility helpers, and targeted tests for legacy manifest/report defaults.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0464ac8` | (see git log) |
 
 ### Testing
 

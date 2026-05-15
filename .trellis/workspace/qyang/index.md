@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~374 | Active |
+| `journal-1.md` | ~413 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-05-15 | Restore model evolution foundation | `0464ac8` | `main` |
 | 10 | 2026-05-15 | Restore backed-up file uploads | `7f07862` | `main` |
 | 9 | 2026-05-15 | Restore history, preflight, and cancellation | `ec800ee`, `f5aadc2`, `7e5c42d` | `main` |
 | 8 | 2026-05-15 | Restore Notion data sources and page properties | `ccaa734`, `bbf0ceb` | `main` |

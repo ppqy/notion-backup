@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-artifacts-and-restore.md", "reason": "Verify restore work against artifact contracts and limits"}
+{"file": ".trellis/tasks/05-15-notion-backup-restore-options/research/restore-options-to-notion.md", "reason": "Verify future implementation against researched restore options"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Check backend restore placement and API boundaries"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Check restore validation and errors"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check backend quality and tests"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Check restore UI conventions"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check shared restore DTOs and frontend typing"}

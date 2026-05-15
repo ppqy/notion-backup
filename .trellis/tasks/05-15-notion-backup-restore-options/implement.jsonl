@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-artifacts-and-restore.md", "reason": "Restore artifact contracts, limits, and test expectations"}
+{"file": ".trellis/tasks/05-15-notion-backup-restore-options/research/restore-options-to-notion.md", "reason": "Restore option comparison and recommended MVP phases"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Backend restore API and service placement"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Restore API validation and user-facing errors"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality gates and testing expectations"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Restore controls and report UI conventions"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Shared restore DTOs and frontend type safety"}

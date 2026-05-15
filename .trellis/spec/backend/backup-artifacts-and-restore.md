@@ -55,6 +55,7 @@ Restore/import is a future best-effort workflow. It can recreate content into ne
 * Artifact shape changes need unit or integration coverage asserting required files and key manifest fields.
 * Asset behavior changes need tests for downloaded, skipped, and external URL cases.
 * Future restore code must test old-to-new ID mapping, missing artifact handling, unsupported block warnings, and partial restore reporting.
+* View-aware restore code must first add view artifacts to backup output, then test property-ID remapping and unsupported view warnings.
 * API route changes around artifact download or restore must pass `npm run lint`, `npm run build`, and targeted Vitest coverage.
 
 ### 7. Wrong vs Correct
@@ -87,8 +88,84 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Original page/block/data source IDs are preserved.
 * Original URLs, edit history, permissions, or comments history are restored.
 * Read-only/computed values such as formulas, rollups, created time, created by, last edited time, and last edited by can be written back exactly.
-* Data source views and UI layout are fully restored.
+* Views from current backup artifacts are restored. Current artifacts do not include Notion view objects; future view-aware backups may restore API-supported view configuration after those objects are backed up, but arbitrary UI state and unsupported view details are still not guaranteed.
 
 **Related Research**:
 
-* `.trellis/tasks/05-15-notion-backup-restore-research/research/notion-json-backup-and-restore.md`
+* `.trellis/tasks/archive/2026-05/05-15-notion-backup-restore-research/research/notion-json-backup-and-restore.md`
+* `.trellis/tasks/05-15-notion-backup-restore-options/research/restore-options-to-notion.md`
+
+## Scenario: Page JSON Restore MVP
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to restore APIs, restore report DTOs, page/block conversion, or restore manifest persistence.
+
+### 2. Signatures
+
+* Start restore: `POST /api/runs/:id/restore`
+* Request body: `{ "targetParent": "<Notion page URL or ID>" }`
+* Latest restore report: `GET /api/runs/:id/restore/latest`
+* Service entry point: `restoreRunToNotion({ runId, targetParentId, token })`
+* Latest report helper: `getLatestRestoreReport(runId)`
+* Latest restore report: `runs/<run-key>/restore-manifest.json`
+* Restore manifest: `runs/<run-key>/restores/<restore-id>/restore-manifest.json`
+
+### 3. Contracts
+
+* Restore starts from canonical page JSON artifacts under `pages/<page-id>.json`; Markdown must not be used when page JSON exists.
+* Restore creates new Notion pages under a target parent page. It must not overwrite, move, or delete original Notion content.
+* `targetParent` accepts Notion URL or ID and is normalized through `normalizeNotionId`.
+* Restore requires an authenticated dashboard session and a configured Notion token.
+* Restore currently supports successful page run items only. Data source items are skipped with warnings until data source restore is implemented.
+* Page creation restores title and compatible emoji/icon/custom emoji/external icons plus external covers. Non-title page properties are not written in this MVP and must be warned.
+* Block conversion must strip response-only fields and downgrade unsupported rich text mentions to plain text with warnings.
+* Child pages are restored recursively when their page JSON artifact exists.
+* Notion-hosted/local file upload restore is not implemented in this MVP. External media URLs may be reattached; Notion-hosted file blocks must warn and skip.
+* The restore report uses shared `RestoreReport` DTO and records status, mappings, item results, warnings, errors, and `manifestPath`.
+
+### 4. Validation & Error Matrix
+
+* Missing login -> `401 unauthorized`.
+* Missing Notion token -> `400 bad_request` with "请先设置有效的 Notion token".
+* Empty `targetParent` -> `400 bad_request` with "请输入目标 Notion 父页面 URL 或 ID".
+* Invalid target parent URL/ID -> `400 bad_request` from Notion ID normalization.
+* Missing run -> `404 not_found`.
+* Missing artifact directory -> `404 not_found`.
+* Missing backup `manifest.json` -> `404 not_found`.
+* No successful run items -> `400 bad_request`.
+* Data source run item -> skipped item plus `data_source_restore_not_implemented` warning.
+* Unsupported block/property/comment/file behavior -> warning in restore report, not silent success.
+
+### 5. Good/Base/Bad Cases
+
+* Good: user starts restore from a successful run, page JSON is read, new pages are created, block mappings are recorded, and `restore-manifest.json` is written.
+* Base: run includes data source or unsupported blocks; supported pages restore and report status becomes `partial_failed` when items are skipped/failed.
+* Bad: restore uses `markdown/<page-id>.md`, silently drops relation/comment/file information, or claims original Notion IDs were preserved.
+
+### 6. Tests Required
+
+* Block conversion tests must assert response-only rich text fields are removed.
+* Mention downgrade tests must assert warnings are emitted.
+* Child page conversion tests must assert recursive page restore action.
+* File block tests must assert Notion-hosted file upload is skipped with warning until upload restore exists.
+* Page artifact warning tests must assert skipped properties/comments are reported.
+* Status resolution tests must assert skipped-only restores fail and mixed restores are partial.
+* API/shared DTO changes must pass `npm run lint`, `npm run build`, and targeted Vitest tests.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const markdown = await readFile(`markdown/${pageId}.md`, "utf8");
+await notion.createPage({ parent, markdown });
+```
+
+#### Correct
+
+```ts
+const artifact = await readPageArtifact(runDir, pageId);
+const restoredPage = await notion.createPage(createPageBody(targetParentId, artifact.page, title));
+await appendBlocks(restoredPage.id, artifact.blocks);
+```

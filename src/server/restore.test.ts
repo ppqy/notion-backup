@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { BackupRunDetail, BackupRunItem } from "../shared/types.js";
-import { collectPageArtifactRestoreWarnings, convertBlockForRestore, resolveRestoreStatus, validateRestorePreflight } from "./restore.js";
+import {
+  collectPageArtifactRestoreWarnings,
+  convertBlockForRestore,
+  convertDataSourcePropertiesForRestore,
+  convertPagePropertiesForRestore,
+  resolveRestoreStatus,
+  validateRestorePreflight
+} from "./restore.js";
 
 describe("restore block conversion", () => {
   it("converts paragraph rich text without response-only fields", () => {
@@ -199,6 +206,172 @@ describe("restore artifact warnings", () => {
   });
 });
 
+describe("restore data source schema conversion", () => {
+  it("keeps writable schema properties and warns for unsupported relation schema", () => {
+    const conversion = convertDataSourcePropertiesForRestore(
+      {
+        Name: { type: "title", title: {} },
+        Status: {
+          type: "status",
+          status: {
+            options: [
+              {
+                id: "old-option",
+                name: "Open",
+                color: "green",
+                description: "Ready"
+              }
+            ],
+            groups: []
+          }
+        },
+        Score: { type: "number", number: { format: "number" } },
+        Related: { type: "relation", relation: { data_source_id: "old-ds" } }
+      },
+      "data-source-1"
+    );
+
+    expect(conversion.properties).toEqual({
+      Name: { title: {} },
+      Status: {
+        status: {
+          options: [
+            {
+              name: "Open",
+              color: "green",
+              description: "Ready"
+            }
+          ]
+        }
+      },
+      Score: { number: { format: "number" } }
+    });
+    expect(conversion.warnings.map((warning) => warning.code)).toEqual(["relation_schema_skipped"]);
+  });
+
+  it("adds a default title schema when the backup schema has no title property", () => {
+    const conversion = convertDataSourcePropertiesForRestore({
+      Done: { type: "checkbox", checkbox: {} }
+    });
+
+    expect(conversion.properties).toMatchObject({
+      Done: { checkbox: {} },
+      Name: { title: {} }
+    });
+    expect(conversion.warnings[0]?.code).toBe("data_source_title_schema_added");
+  });
+});
+
+describe("restore page property conversion", () => {
+  it("restores writable property values with response-only fields removed", () => {
+    const conversion = convertPagePropertiesForRestore({
+      sourceProperties: {
+        Name: { type: "title", title: [{ type: "text", text: { content: "Fallback", link: null }, plain_text: "Fallback", href: null }] },
+        Status: { type: "status", status: { id: "status-id", name: "Open", color: "green" } },
+        Tags: {
+          type: "multi_select",
+          multi_select: [
+            {
+              id: "tag-id",
+              name: "Important",
+              color: "red"
+            }
+          ]
+        },
+        Score: { type: "number", number: 7 },
+        Done: { type: "checkbox", checkbox: true },
+        Due: { type: "date", date: { start: "2026-05-15", end: null, time_zone: null } },
+        Link: { type: "url", url: "https://example.com" },
+        File: {
+          type: "files",
+          files: [
+            {
+              type: "external",
+              name: "spec",
+              external: { url: "https://example.com/spec.pdf" }
+            },
+            {
+              type: "file",
+              name: "local",
+              file: { url: "https://secure.notion-static.com/local.pdf" }
+            }
+          ]
+        },
+        Created: { type: "created_time", created_time: "2026-05-15T00:00:00.000Z" }
+      },
+      propertyItems: {
+        Name: {
+          object: "list",
+          results: [
+            { object: "property_item", type: "title", title: { type: "text", text: { content: "Full", link: null }, plain_text: "Full" } },
+            { object: "property_item", type: "title", title: { type: "text", text: { content: " title", link: null }, plain_text: " title" } }
+          ]
+        }
+      },
+      fallbackTitle: "Fallback",
+      pageId: "page-1"
+    });
+
+    expect(conversion.properties).toMatchObject({
+      Name: {
+        title: [
+          { type: "text", text: { content: "Full" } },
+          { type: "text", text: { content: " title" } }
+        ]
+      },
+      Status: { status: { name: "Open", color: "green" } },
+      Tags: { multi_select: [{ name: "Important", color: "red" }] },
+      Score: { number: 7 },
+      Done: { checkbox: true },
+      Due: { date: { start: "2026-05-15", end: null, time_zone: null } },
+      Link: { url: "https://example.com" },
+      File: { files: [{ type: "external", name: "spec", external: { url: "https://example.com/spec.pdf" } }] }
+    });
+    expect(conversion.warnings.map((warning) => warning.code)).toEqual(["file_property_upload_not_implemented", "read_only_property_skipped"]);
+  });
+
+  it("maps relation values only when restored page mappings exist", () => {
+    const conversion = convertPagePropertiesForRestore({
+      sourceProperties: {
+        Name: { type: "title", title: [] },
+        Related: {
+          type: "relation",
+          relation: [{ id: "old-page-1" }, { id: "old-page-2" }]
+        }
+      },
+      fallbackTitle: "Task",
+      pageId: "page-1",
+      pageMappings: {
+        "old-page-1": "new-page-1"
+      }
+    });
+
+    expect(conversion.properties.Related).toEqual({
+      relation: [{ id: "new-page-1" }]
+    });
+    expect(conversion.warnings[0]?.code).toBe("relation_property_unresolved");
+  });
+
+  it("skips values that are not present in the restored data source schema", () => {
+    const conversion = convertPagePropertiesForRestore({
+      sourceProperties: {
+        Name: { type: "title", title: [] },
+        Related: {
+          type: "relation",
+          relation: [{ id: "old-page-1" }]
+        }
+      },
+      fallbackTitle: "Task",
+      allowedPropertyNames: new Set(["Name"])
+    });
+
+    expect(conversion.properties).toEqual({
+      Name: { title: [{ type: "text", text: { content: "Task" } }] }
+    });
+    expect(conversion.warnings[0]?.code).toBe("page_property_schema_missing");
+  });
+});
+
 describe("restore preflight", () => {
   it("requires an artifact directory and manifest", async () => {
     await expect(validateRestorePreflight(fakeRun({ artifactDir: null }))).rejects.toThrow("备份文件不存在");
@@ -223,6 +396,7 @@ describe("restore report status", () => {
   it("marks skipped-only restores as failed and mixed restores as partial", () => {
     expect(resolveRestoreStatus({ createdPages: 0, failedItems: 0, skippedItems: 1, errorCount: 0 })).toBe("failed");
     expect(resolveRestoreStatus({ createdPages: 1, failedItems: 0, skippedItems: 1, errorCount: 0 })).toBe("partial_failed");
+    expect(resolveRestoreStatus({ createdPages: 0, createdDataSources: 1, failedItems: 0, skippedItems: 0, errorCount: 1 })).toBe("partial_failed");
   });
 });
 

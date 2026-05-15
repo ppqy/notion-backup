@@ -144,6 +144,7 @@ export type RestoreItemResult = {
   title: string;
   status: "succeeded" | "failed" | "skipped";
   newPageId?: string;
+  newDataSourceId?: string;
   warnings: RestoreWarning[];
   error?: string;
 };
@@ -158,6 +159,7 @@ export type RestoreReport = {
   finishedAt: string | null;
   summary: {
     createdPages: number;
+    createdDataSources: number;
     createdBlocks: number;
     skippedItems: number;
     failedItems: number;

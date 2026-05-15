@@ -920,7 +920,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
       setMessage("请输入目标父页面 URL 或 ID");
       return;
     }
-    if (!confirm("恢复会在目标父页面下创建新的 Notion 页面，不会覆盖原内容。继续？")) {
+    if (!confirm("恢复会在目标父页面下创建新的 Notion 页面和数据源，不会覆盖原内容。继续？")) {
       return;
     }
     setBusy(true);
@@ -942,7 +942,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
         <h2>恢复到 Notion</h2>
         {report ? <span className="muted">最近恢复：{formatDate(report.startedAt)}</span> : null}
       </div>
-      <p className="muted">恢复会创建新的 Notion 页面，不会覆盖或回滚原页面。当前版本恢复页面和常见区块，数据源、评论、关系、视图和本地文件会记录为警告。</p>
+      <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、视图、本地文件和无法映射的关系会记录为警告。</p>
       <form className="inline-form" onSubmit={submit}>
         <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
         <button className="primary" type="submit" disabled={!canRestore || busy}>
@@ -965,6 +965,7 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
       <div className="metrics compact">
         <Metric label="状态" value={restoreStatusLabel(report.status)} />
         <Metric label="新建页面" value={String(report.summary.createdPages)} />
+        <Metric label="新建数据源" value={String(report.summary.createdDataSources ?? 0)} />
         <Metric label="新建区块" value={String(report.summary.createdBlocks)} />
         <Metric label="警告" value={String(report.summary.warningCount)} />
         <Metric label="失败" value={String(report.summary.failedItems)} />
@@ -976,7 +977,13 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
             <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : "canceled"} />
             <div>
               <strong>{item.title}</strong>
-              <p className="muted">{item.status === "succeeded" ? `新页面：${item.newPageId}` : item.error || item.warnings[0]?.message || "已跳过"}</p>
+              <p className="muted">
+                {item.status === "succeeded"
+                  ? item.newDataSourceId
+                    ? `新数据源：${item.newDataSourceId}`
+                    : `新页面：${item.newPageId}`
+                  : item.error || item.warnings[0]?.message || "已跳过"}
+              </p>
             </div>
           </div>
         ))}

@@ -177,6 +177,14 @@ export class NotionClient {
     });
   }
 
+  async createDatabase(body: unknown): Promise<NotionObject> {
+    return this.request({
+      method: "POST",
+      path: "databases",
+      body
+    });
+  }
+
   async appendBlockChildren(blockId: string, children: NotionObject[]): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }> {
     return this.request({
       method: "PATCH",

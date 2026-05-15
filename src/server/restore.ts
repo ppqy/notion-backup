@@ -18,6 +18,17 @@ type PageArtifact = {
   markdown?: unknown;
 };
 
+type RestoreParent =
+  | {
+      type: "page_id";
+      page_id: string;
+    }
+  | {
+      type: "data_source_id";
+      data_source_id: string;
+      allowedPropertyNames?: Set<string>;
+    };
+
 type BlockConversion =
   | {
       action: "append";
@@ -46,6 +57,7 @@ type RestoreContext = {
 const RESTORE_LATEST_FILE = "restore-latest.json";
 const RESTORE_CHILD_CHUNK_SIZE = 100;
 const READ_ONLY_PAGE_PROPERTY_TYPES = new Set(["created_by", "created_time", "last_edited_by", "last_edited_time", "formula", "rollup", "unique_id", "verification"]);
+const UNSUPPORTED_SCHEMA_PROPERTY_TYPES = new Set(["relation", "rollup", "formula", "button", "location", "verification", "last_visited_time"]);
 
 export async function restoreRunToNotion(input: { runId: string; targetParentId: string; token: string }): Promise<RestoreReport> {
   const run = getRun(input.runId);
@@ -79,19 +91,23 @@ export async function restoreRunToNotion(input: { runId: string; targetParentId:
       addSkippedItem(report, item, "只恢复状态为成功的备份项目");
       continue;
     }
-    if (item.objectType !== "page") {
-      addSkippedItem(report, item, "数据源结构恢复尚未在当前版本实现");
-      addWarning(report, {
-        code: "data_source_restore_not_implemented",
-        message: "数据源、视图和条目结构恢复尚未实现；当前版本仅恢复页面 JSON",
-        objectId: item.objectId
-      });
-      continue;
-    }
-
     const itemWarningsStart = report.warnings.length;
     try {
-      const newPageId = await restorePageArtifact(context, item.objectId, input.targetParentId, item.title);
+      if (item.objectType === "data_source") {
+        const newDataSourceId = await restoreDataSourceArtifact(context, item.objectId, input.targetParentId, item.title);
+        const warnings = report.warnings.slice(itemWarningsStart);
+        report.items.push({
+          objectId: item.objectId,
+          objectType: item.objectType,
+          title: item.title,
+          status: "succeeded",
+          newDataSourceId,
+          warnings
+        });
+        continue;
+      }
+
+      const newPageId = await restorePageArtifact(context, item.objectId, { type: "page_id", page_id: input.targetParentId }, item.title);
       const warnings = report.warnings.slice(itemWarningsStart);
       report.items.push({
         objectId: item.objectId,
@@ -151,7 +167,94 @@ export async function getLatestRestoreReport(runId: string): Promise<RestoreRepo
   return readJson<RestoreReport>(latestPath).catch(() => null);
 }
 
-async function restorePageArtifact(context: RestoreContext, pageId: string, targetParentId: string, fallbackTitle?: string): Promise<string> {
+async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: string, targetParentId: string, fallbackTitle?: string): Promise<string> {
+  if (context.report.mappings.dataSources[dataSourceId]) {
+    return context.report.mappings.dataSources[dataSourceId];
+  }
+  const schema = await readDataSourceSchema(context.runDir, dataSourceId);
+  const entries = await readDataSourceEntries(context.runDir, dataSourceId);
+  const schemaConversion = convertDataSourcePropertiesForRestore(schema.properties, dataSourceId);
+  for (const warning of schemaConversion.warnings) {
+    addWarning(context.report, warning);
+  }
+
+  const iconWarnings: RestoreWarning[] = [];
+  const coverWarnings: RestoreWarning[] = [];
+  const icon = sanitizeIcon(schema.icon, iconWarnings);
+  const cover = sanitizePageCover(schema.cover, coverWarnings);
+  if (schema.icon && !icon) {
+    addWarning(context.report, {
+      code: "data_source_icon_skipped",
+      message: "数据源图标不是可直接恢复的 emoji/icon/custom_emoji/external 格式，已跳过",
+      objectId: dataSourceId
+    });
+  }
+  if (schema.cover && !cover) {
+    addWarning(context.report, {
+      code: "data_source_cover_skipped",
+      message: "数据源封面不是可直接恢复的 external 格式，已跳过",
+      objectId: dataSourceId
+    });
+  }
+
+  const titleRichText = sanitizeRichTextArray(schema.title, context.report.warnings);
+  const descriptionRichText = sanitizeRichTextArray(schema.description, context.report.warnings);
+  const created = await context.notion.createDatabase({
+    parent: {
+      type: "page_id",
+      page_id: targetParentId
+    },
+    title: titleRichText.length > 0 ? titleRichText : textRichText(fallbackTitle || extractTitle(schema) || "恢复数据源"),
+    ...(descriptionRichText.length > 0 ? { description: descriptionRichText } : {}),
+    ...(typeof schema.is_inline === "boolean" ? { is_inline: schema.is_inline } : {}),
+    initial_data_source: {
+      properties: schemaConversion.properties
+    },
+    ...(icon ? { icon } : {}),
+    ...(cover ? { cover } : {})
+  });
+  const newDataSourceId = extractCreatedDataSourceId(created);
+  if (!newDataSourceId) {
+    throw new Error("Notion 未返回新数据源 ID");
+  }
+  context.report.mappings.dataSources[dataSourceId] = newDataSourceId;
+  context.report.summary.createdDataSources += 1;
+
+  const parent: RestoreParent = {
+    type: "data_source_id",
+    data_source_id: newDataSourceId,
+    allowedPropertyNames: new Set(Object.keys(schemaConversion.properties))
+  };
+  for (const entry of entries) {
+    const entryPageId = String(entry.id ?? "");
+    if (!entryPageId) {
+      addWarning(context.report, {
+        code: "data_source_entry_id_missing",
+        message: "数据源条目缺少页面 ID，已跳过",
+        objectId: dataSourceId
+      });
+      continue;
+    }
+    try {
+      await restorePageArtifact(context, entryPageId, parent, extractTitle(entry));
+    } catch (error) {
+      const message = `数据源条目恢复失败：${entryPageId}：${errorMessage(error)}`;
+      context.report.errors.push(message);
+      addWarning(context.report, {
+        code: "data_source_entry_restore_failed",
+        message,
+        objectId: dataSourceId,
+        details: {
+          entryPageId
+        }
+      });
+    }
+  }
+
+  return newDataSourceId;
+}
+
+async function restorePageArtifact(context: RestoreContext, pageId: string, parent: RestoreParent, fallbackTitle?: string): Promise<string> {
   if (context.report.mappings.pages[pageId]) {
     return context.report.mappings.pages[pageId];
   }
@@ -161,16 +264,18 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, targ
       message: "检测到循环子页面引用，已跳过",
       objectId: pageId
     });
-    return targetParentId;
+    return parent.type === "page_id" ? parent.page_id : parent.data_source_id;
   }
   context.restoringPages.add(pageId);
   try {
     const artifact = await readPageArtifact(context.runDir, pageId);
-    for (const warning of collectPageArtifactRestoreWarnings(artifact, pageId)) {
+    const pageWarnings =
+      parent.type === "page_id" ? collectPageArtifactRestoreWarnings(artifact, pageId) : collectPageCommentsRestoreWarnings(artifact, pageId);
+    for (const warning of pageWarnings) {
       addWarning(context.report, warning);
     }
     const title = extractTitle(artifact.page) || fallbackTitle || "恢复页面";
-    const createBody = createPageBody(targetParentId, artifact.page, title, context.report, pageId);
+    const createBody = createPageBody(parent, artifact, title, context.report, pageId);
     const restoredPage = await context.notion.createPage(createBody);
     const restoredPageId = String(restoredPage.id ?? "");
     if (!restoredPageId) {
@@ -210,7 +315,7 @@ async function appendBlocks(context: RestoreContext, parentBlockId: string, bloc
       await flushEntries();
       const childArtifactPath = pageArtifactPath(context.runDir, conversion.childPageId);
       if (existsSync(childArtifactPath)) {
-        await restorePageArtifact(context, conversion.childPageId, parentBlockId, conversion.title);
+        await restorePageArtifact(context, conversion.childPageId, { type: "page_id", page_id: parentBlockId }, conversion.title);
       } else {
         addWarning(context.report, {
           code: "child_page_artifact_missing",
@@ -430,6 +535,7 @@ function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKe
     finishedAt: null,
     summary: {
       createdPages: 0,
+      createdDataSources: 0,
       createdBlocks: 0,
       skippedItems: 0,
       failedItems: 0,
@@ -448,7 +554,8 @@ function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKe
   };
 }
 
-function createPageBody(targetParentId: string, sourcePage: NotionObject, title: string, report: RestoreReport, oldPageId: string): NotionObject {
+function createPageBody(parent: RestoreParent, artifact: PageArtifact, title: string, report: RestoreReport, oldPageId: string): NotionObject {
+  const sourcePage = artifact.page;
   const iconWarnings: RestoreWarning[] = [];
   const coverWarnings: RestoreWarning[] = [];
   const icon = sanitizeIcon(sourcePage.icon, iconWarnings);
@@ -467,16 +574,39 @@ function createPageBody(targetParentId: string, sourcePage: NotionObject, title:
       objectId: oldPageId
     });
   }
+  const properties =
+    parent.type === "data_source_id"
+      ? convertPagePropertiesForRestore({
+          sourceProperties: sourcePage.properties,
+          propertyItems: artifact.propertyItems,
+          fallbackTitle: title,
+          pageId: oldPageId,
+          allowedPropertyNames: parent.allowedPropertyNames,
+          pageMappings: report.mappings.pages
+        })
+      : {
+          properties: {
+            title: {
+              title: textRichText(title)
+            }
+          },
+          warnings: []
+        };
+  for (const warning of properties.warnings) {
+    addWarning(report, warning);
+  }
   return {
-    parent: {
-      type: "page_id",
-      page_id: targetParentId
-    },
-    properties: {
-      title: {
-        title: textRichText(title)
-      }
-    },
+    parent:
+      parent.type === "page_id"
+        ? {
+            type: "page_id",
+            page_id: parent.page_id
+          }
+        : {
+            type: "data_source_id",
+            data_source_id: parent.data_source_id
+          },
+    properties: properties.properties,
     ...(icon ? { icon } : {}),
     ...(cover ? { cover } : {})
   };
@@ -491,6 +621,7 @@ function finishReport(report: RestoreReport): void {
   report.finishedAt = nowIso();
   report.status = resolveRestoreStatus({
     createdPages: report.summary.createdPages,
+    createdDataSources: report.summary.createdDataSources,
     failedItems,
     skippedItems,
     errorCount: report.errors.length
@@ -516,6 +647,30 @@ async function readPageArtifact(runDir: string, pageId: string): Promise<PageArt
   return artifact;
 }
 
+async function readDataSourceSchema(runDir: string, dataSourceId: string): Promise<NotionObject> {
+  const filePath = path.join(dataSourceArtifactPath(runDir, dataSourceId), "schema.json");
+  if (!existsSync(filePath)) {
+    throw notFound(`数据源 schema 备份文件不存在：${dataSourceId}`);
+  }
+  const schema = await readJson<NotionObject>(filePath);
+  if (!schema || typeof schema !== "object") {
+    throw badRequest(`数据源 schema 备份文件格式无效：${dataSourceId}`);
+  }
+  return schema;
+}
+
+async function readDataSourceEntries(runDir: string, dataSourceId: string): Promise<NotionObject[]> {
+  const filePath = path.join(dataSourceArtifactPath(runDir, dataSourceId), "entries.json");
+  if (!existsSync(filePath)) {
+    throw notFound(`数据源 entries 备份文件不存在：${dataSourceId}`);
+  }
+  const entries = await readJson<unknown>(filePath);
+  if (!Array.isArray(entries)) {
+    throw badRequest(`数据源 entries 备份文件格式无效：${dataSourceId}`);
+  }
+  return entries.filter((entry): entry is NotionObject => Boolean(entry && typeof entry === "object"));
+}
+
 async function readJson<T>(filePath: string): Promise<T> {
   const text = await readFile(filePath, "utf8");
   return JSON.parse(text) as T;
@@ -523,6 +678,28 @@ async function readJson<T>(filePath: string): Promise<T> {
 
 function pageArtifactPath(runDir: string, pageId: string): string {
   return path.join(runDir, "pages", `${pageId}.json`);
+}
+
+function dataSourceArtifactPath(runDir: string, dataSourceId: string): string {
+  return path.join(runDir, "data-sources", dataSourceId);
+}
+
+function extractCreatedDataSourceId(response: NotionObject): string | null {
+  if (response.object === "data_source" && typeof response.id === "string") {
+    return response.id;
+  }
+  if (Array.isArray(response.data_sources)) {
+    for (const dataSource of response.data_sources) {
+      if (dataSource && typeof dataSource === "object" && typeof (dataSource as { id?: unknown }).id === "string") {
+        return (dataSource as { id: string }).id;
+      }
+    }
+  }
+  const initialDataSource = response.initial_data_source;
+  if (initialDataSource && typeof initialDataSource === "object" && typeof (initialDataSource as { id?: unknown }).id === "string") {
+    return (initialDataSource as { id: string }).id;
+  }
+  return null;
 }
 
 function addSkippedItem(report: RestoreReport, item: BackupRunItem, message: string): void {
@@ -575,9 +752,9 @@ function getPayload(block: NotionObject, type: string): NotionObject {
   return payload && typeof payload === "object" ? (payload as NotionObject) : {};
 }
 
-export function resolveRestoreStatus(input: { createdPages: number; failedItems: number; skippedItems: number; errorCount: number }): RestoreStatus {
+export function resolveRestoreStatus(input: { createdPages: number; createdDataSources?: number; failedItems: number; skippedItems: number; errorCount: number }): RestoreStatus {
   if (input.failedItems > 0 || input.skippedItems > 0 || input.errorCount > 0) {
-    return input.createdPages > 0 ? "partial_failed" : "failed";
+    return input.createdPages + (input.createdDataSources ?? 0) > 0 ? "partial_failed" : "failed";
   }
   return "succeeded";
 }
@@ -627,6 +804,416 @@ export function collectPageArtifactRestoreWarnings(artifact: { page: NotionObjec
     });
   }
   return warnings;
+}
+
+function collectPageCommentsRestoreWarnings(artifact: { comments?: unknown }, pageId: string): RestoreWarning[] {
+  if (!hasBackedUpComments(artifact.comments)) {
+    return [];
+  }
+  return [
+    {
+      code: "comments_restore_not_implemented",
+      message: "评论恢复尚未实现；当前版本不会重新创建评论",
+      objectId: pageId
+    }
+  ];
+}
+
+export function convertDataSourcePropertiesForRestore(sourceProperties: unknown, dataSourceId = ""): { properties: Record<string, NotionObject>; warnings: RestoreWarning[] } {
+  const warnings: RestoreWarning[] = [];
+  const properties: Record<string, NotionObject> = {};
+  let hasTitle = false;
+  if (sourceProperties && typeof sourceProperties === "object") {
+    for (const [propertyName, rawProperty] of Object.entries(sourceProperties as Record<string, unknown>)) {
+      if (!rawProperty || typeof rawProperty !== "object") {
+        continue;
+      }
+      const property = rawProperty as NotionObject;
+      const propertyType = typeof property.type === "string" ? property.type : "";
+      const converted = convertDataSourcePropertySchema(propertyName, property, propertyType, dataSourceId, warnings);
+      if (!converted) {
+        continue;
+      }
+      if (propertyType === "title") {
+        hasTitle = true;
+      }
+      properties[propertyName] = converted;
+    }
+  }
+  if (!hasTitle) {
+    properties.Name = {
+      title: {}
+    };
+    warnings.push({
+      code: "data_source_title_schema_added",
+      message: "数据源 schema 缺少标题属性，已添加默认 Name 标题属性",
+      objectId: dataSourceId || undefined
+    });
+  }
+  return {
+    properties,
+    warnings
+  };
+}
+
+export function convertPagePropertiesForRestore(input: {
+  sourceProperties: unknown;
+  propertyItems?: Record<string, unknown>;
+  fallbackTitle: string;
+  pageId?: string;
+  allowedPropertyNames?: Set<string>;
+  pageMappings?: Record<string, string>;
+}): { properties: Record<string, NotionObject>; warnings: RestoreWarning[] } {
+  const warnings: RestoreWarning[] = [];
+  const properties: Record<string, NotionObject> = {};
+  let titlePropertyName: string | null = null;
+  if (input.sourceProperties && typeof input.sourceProperties === "object") {
+    for (const [propertyName, rawProperty] of Object.entries(input.sourceProperties as Record<string, unknown>)) {
+      if (!rawProperty || typeof rawProperty !== "object") {
+        continue;
+      }
+      const property = rawProperty as NotionObject;
+      const propertyType = typeof property.type === "string" ? property.type : "";
+      if (propertyType === "title") {
+        titlePropertyName = propertyName;
+      }
+      if (input.allowedPropertyNames && !input.allowedPropertyNames.has(propertyName)) {
+        warnings.push(propertyWarning("page_property_schema_missing", `目标数据源缺少可写属性，已跳过：${propertyName}`, input.pageId, propertyName, propertyType));
+        continue;
+      }
+      const converted = convertPagePropertyValue({
+        propertyName,
+        property,
+        propertyItem: input.propertyItems?.[propertyName],
+        propertyType,
+        fallbackTitle: input.fallbackTitle,
+        pageId: input.pageId,
+        pageMappings: input.pageMappings,
+        warnings
+      });
+      if (converted) {
+        properties[propertyName] = converted;
+      }
+    }
+  }
+  if (!Object.values(properties).some((property) => "title" in property)) {
+    const name = titlePropertyName || "Name";
+    if (!input.allowedPropertyNames || input.allowedPropertyNames.has(name)) {
+      properties[name] = {
+        title: textRichText(input.fallbackTitle)
+      };
+    }
+  }
+  return {
+    properties,
+    warnings
+  };
+}
+
+function convertDataSourcePropertySchema(
+  propertyName: string,
+  property: NotionObject,
+  propertyType: string,
+  dataSourceId: string,
+  warnings: RestoreWarning[]
+): NotionObject | null {
+  if (!propertyType || UNSUPPORTED_SCHEMA_PROPERTY_TYPES.has(propertyType)) {
+    warnings.push(
+      propertyWarning(
+        propertyType === "relation" ? "relation_schema_skipped" : "data_source_schema_property_skipped",
+        `数据源属性 schema 当前版本不会恢复，已跳过：${propertyName}`,
+        dataSourceId,
+        propertyName,
+        propertyType || "unknown"
+      )
+    );
+    return null;
+  }
+  const payload = getPayload(property, propertyType);
+  switch (propertyType) {
+    case "title":
+      return { title: {} };
+    case "rich_text":
+      return { rich_text: {} };
+    case "number":
+      return { number: typeof payload.format === "string" ? { format: payload.format } : {} };
+    case "select":
+      return { select: { options: sanitizeSelectOptions(payload.options) } };
+    case "multi_select":
+      return { multi_select: { options: sanitizeSelectOptions(payload.options) } };
+    case "status":
+      return { status: { options: sanitizeSelectOptions(payload.options) } };
+    case "date":
+      return { date: {} };
+    case "checkbox":
+      return { checkbox: {} };
+    case "url":
+      return { url: {} };
+    case "email":
+      return { email: {} };
+    case "phone_number":
+      return { phone_number: {} };
+    case "files":
+      return { files: {} };
+    case "people":
+      return { people: {} };
+    case "unique_id":
+      return { unique_id: { prefix: typeof payload.prefix === "string" ? payload.prefix : null } };
+    case "created_by":
+      return { created_by: {} };
+    case "created_time":
+      return { created_time: {} };
+    case "last_edited_by":
+      return { last_edited_by: {} };
+    case "last_edited_time":
+      return { last_edited_time: {} };
+    case "place":
+      return { place: {} };
+    default:
+      warnings.push(propertyWarning("data_source_schema_property_skipped", `暂不支持恢复 ${propertyType} 数据源属性 schema，已跳过：${propertyName}`, dataSourceId, propertyName, propertyType));
+      return null;
+  }
+}
+
+function convertPagePropertyValue(input: {
+  propertyName: string;
+  property: NotionObject;
+  propertyItem?: unknown;
+  propertyType: string;
+  fallbackTitle: string;
+  pageId?: string;
+  pageMappings?: Record<string, string>;
+  warnings: RestoreWarning[];
+}): NotionObject | null {
+  const value = propertyValueObject(input.property, input.propertyItem, input.propertyType);
+  switch (input.propertyType) {
+    case "title": {
+      const title = sanitizeRichTextArray(richTextItemsForProperty(input.property, input.propertyItem, "title"), input.warnings);
+      return {
+        title: title.length > 0 ? title : textRichText(input.fallbackTitle)
+      };
+    }
+    case "rich_text":
+      return {
+        rich_text: sanitizeRichTextArray(richTextItemsForProperty(input.property, input.propertyItem, "rich_text"), input.warnings)
+      };
+    case "number":
+      return { number: typeof value.number === "number" ? value.number : value.number === null ? null : null };
+    case "checkbox":
+      return { checkbox: value.checkbox === true };
+    case "select":
+      return { select: sanitizeSelectValue(value.select) };
+    case "multi_select":
+      return { multi_select: Array.isArray(value.multi_select) ? value.multi_select.flatMap((option) => sanitizeSelectValue(option) ?? []) : [] };
+    case "status":
+      return { status: sanitizeSelectValue(value.status) };
+    case "date":
+      return { date: sanitizeDateValue(value.date) };
+    case "url":
+      return { url: typeof value.url === "string" ? value.url : value.url === null ? null : null };
+    case "email":
+      return { email: typeof value.email === "string" ? value.email : value.email === null ? null : null };
+    case "phone_number":
+      return { phone_number: typeof value.phone_number === "string" ? value.phone_number : value.phone_number === null ? null : null };
+    case "files": {
+      const files = sanitizeFilePropertyValue(value.files, input);
+      return files ? { files } : null;
+    }
+    case "place":
+      return { place: sanitizePlaceValue(value.place) };
+    case "relation": {
+      const relation = relationValueForRestore(input.property, input.propertyItem, input.pageMappings, input);
+      return relation ? { relation } : null;
+    }
+    case "people":
+      input.warnings.push(propertyWarning("people_property_skipped", `人员属性当前版本不会恢复，已跳过：${input.propertyName}`, input.pageId, input.propertyName, input.propertyType));
+      return null;
+    default:
+      input.warnings.push(
+        propertyWarning(
+          READ_ONLY_PAGE_PROPERTY_TYPES.has(input.propertyType) ? "read_only_property_skipped" : "page_property_skipped",
+          `页面属性当前版本不会恢复，已跳过：${input.propertyName}`,
+          input.pageId,
+          input.propertyName,
+          input.propertyType || "unknown"
+        )
+      );
+      return null;
+  }
+}
+
+function propertyValueObject(property: NotionObject, propertyItem: unknown, propertyType: string): NotionObject {
+  if (propertyItem && typeof propertyItem === "object") {
+    const item = propertyItem as NotionObject;
+    if (item.object === "property_item" && item.type === propertyType) {
+      return item;
+    }
+  }
+  return property;
+}
+
+function richTextItemsForProperty(property: NotionObject, propertyItem: unknown, propertyType: "title" | "rich_text"): unknown[] {
+  if (propertyItem && typeof propertyItem === "object") {
+    const item = propertyItem as NotionObject;
+    if (item.object === "list" && Array.isArray(item.results)) {
+      return item.results.flatMap((result) => {
+        if (!result || typeof result !== "object") {
+          return [];
+        }
+        const payload = (result as NotionObject)[propertyType];
+        return payload && typeof payload === "object" ? [payload] : [];
+      });
+    }
+    if (item.object === "property_item" && item.type === propertyType) {
+      const payload = item[propertyType];
+      return payload && typeof payload === "object" ? [payload] : [];
+    }
+  }
+  const payload = property[propertyType];
+  return Array.isArray(payload) ? payload : [];
+}
+
+function relationValueForRestore(
+  property: NotionObject,
+  propertyItem: unknown,
+  pageMappings: Record<string, string> | undefined,
+  input: { propertyName: string; propertyType: string; pageId?: string; warnings: RestoreWarning[] }
+): NotionObject[] | null {
+  const ids = relationIdsForProperty(property, propertyItem);
+  if (ids.length === 0) {
+    return [];
+  }
+  const restoredIds = ids.flatMap((id) => {
+    const restoredId = pageMappings?.[id];
+    return restoredId ? [{ id: restoredId }] : [];
+  });
+  if (restoredIds.length !== ids.length) {
+    input.warnings.push(
+      propertyWarning("relation_property_unresolved", `关系属性包含未在本次恢复中映射的页面，已跳过未映射关系：${input.propertyName}`, input.pageId, input.propertyName, input.propertyType)
+    );
+  }
+  return restoredIds.length > 0 ? restoredIds : null;
+}
+
+function relationIdsForProperty(property: NotionObject, propertyItem: unknown): string[] {
+  if (propertyItem && typeof propertyItem === "object") {
+    const item = propertyItem as NotionObject;
+    if (item.object === "list" && Array.isArray(item.results)) {
+      return item.results.flatMap((result) => {
+        if (!result || typeof result !== "object") {
+          return [];
+        }
+        const relation = getPayload(result as NotionObject, "relation");
+        return typeof relation.id === "string" ? [relation.id] : [];
+      });
+    }
+  }
+  const relation = property.relation;
+  if (!Array.isArray(relation)) {
+    return [];
+  }
+  return relation.flatMap((item) => (item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string" ? [(item as { id: string }).id] : []));
+}
+
+function sanitizeSelectOptions(value: unknown): NotionObject[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((option) => {
+    const sanitized = sanitizeSelectValue(option);
+    return sanitized ? [sanitized] : [];
+  });
+}
+
+function sanitizeSelectValue(value: unknown): NotionObject | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const option = value as NotionObject;
+  if (typeof option.name !== "string" || !option.name) {
+    return null;
+  }
+  return {
+    name: option.name,
+    ...(typeof option.color === "string" ? { color: option.color } : {}),
+    ...(typeof option.description === "string" || option.description === null ? { description: option.description } : {})
+  };
+}
+
+function sanitizeDateValue(value: unknown): NotionObject | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const date = value as NotionObject;
+  if (typeof date.start !== "string" || !date.start) {
+    return null;
+  }
+  return {
+    start: date.start,
+    ...(typeof date.end === "string" || date.end === null ? { end: date.end } : {}),
+    ...(typeof date.time_zone === "string" || date.time_zone === null ? { time_zone: date.time_zone } : {})
+  };
+}
+
+function sanitizeFilePropertyValue(
+  value: unknown,
+  input: { propertyName: string; propertyType: string; pageId?: string; warnings: RestoreWarning[] }
+): NotionObject[] | null {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const files: NotionObject[] = [];
+  for (const file of value) {
+    if (!file || typeof file !== "object") {
+      continue;
+    }
+    const record = file as NotionObject;
+    if (record.type === "external") {
+      const external = getPayload(record, "external");
+      if (typeof external.url === "string" && external.url) {
+        files.push({
+          type: "external",
+          name: typeof record.name === "string" && record.name ? record.name : "file",
+          external: {
+            url: external.url
+          }
+        });
+      }
+      continue;
+    }
+    input.warnings.push(propertyWarning("file_property_upload_not_implemented", `文件属性包含 Notion 托管或本地文件，当前版本已跳过：${input.propertyName}`, input.pageId, input.propertyName, input.propertyType));
+  }
+  return files.length > 0 || value.length === 0 ? files : null;
+}
+
+function sanitizePlaceValue(value: unknown): NotionObject | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const place = value as NotionObject;
+  if (typeof place.lat !== "number" || typeof place.lon !== "number") {
+    return null;
+  }
+  return {
+    lat: place.lat,
+    lon: place.lon,
+    ...(typeof place.name === "string" || place.name === null ? { name: place.name } : {}),
+    ...(typeof place.address === "string" || place.address === null ? { address: place.address } : {}),
+    ...(typeof place.aws_place_id === "string" || place.aws_place_id === null ? { aws_place_id: place.aws_place_id } : {}),
+    ...(typeof place.google_place_id === "string" || place.google_place_id === null ? { google_place_id: place.google_place_id } : {})
+  };
+}
+
+function propertyWarning(code: string, message: string, objectId: string | undefined, propertyName: string, propertyType: string): RestoreWarning {
+  return {
+    code,
+    message,
+    objectId,
+    details: {
+      propertyName,
+      propertyType
+    }
+  };
 }
 
 function richTextPayload(payload: NotionObject, warnings: RestoreWarning[]): NotionObject {

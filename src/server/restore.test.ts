@@ -9,6 +9,7 @@ import {
   convertDataSourcePropertiesForRestore,
   convertPagePropertiesForRestore,
   resolveRestoreStatus,
+  safeUploadFileName,
   summarizeRestorePreflight,
   validateRestorePreflight
 } from "./restore.js";
@@ -93,7 +94,7 @@ describe("restore block conversion", () => {
     });
   });
 
-  it("skips Notion-hosted file blocks until file upload restore is implemented", () => {
+  it("skips Notion-hosted file blocks when no backed-up asset resolver is available", () => {
     const conversion = convertBlockForRestore({
       id: "file-block",
       type: "file",
@@ -108,6 +109,72 @@ describe("restore block conversion", () => {
 
     expect(conversion.action).toBe("skip");
     expect(conversion.warnings[0]?.code).toBe("local_file_upload_not_implemented");
+  });
+
+  it("restores Notion-hosted file blocks when a file upload resolver returns an upload", () => {
+    const conversion = convertBlockForRestore(
+      {
+        id: "file-block",
+        type: "file",
+        file: {
+          type: "file",
+          file: {
+            url: "https://secure.notion-static.com/file.pdf"
+          },
+          caption: [{ type: "text", text: { content: "Spec" }, plain_text: "Spec" }]
+        }
+      },
+      {
+        fileResolver: () => ({
+          type: "file_upload",
+          file_upload: {
+            id: "upload-1"
+          }
+        })
+      }
+    );
+
+    expect(conversion.action).toBe("append");
+    if (conversion.action === "append") {
+      expect(conversion.request).toEqual({
+        type: "file",
+        file: {
+          type: "file_upload",
+          file_upload: {
+            id: "upload-1"
+          },
+          caption: [{ type: "text", text: { content: "Spec" } }]
+        }
+      });
+    }
+  });
+
+  it("keeps asset restore warnings when a file upload resolver cannot upload", () => {
+    const conversion = convertBlockForRestore(
+      {
+        id: "image-block",
+        type: "image",
+        image: {
+          type: "file",
+          file: {
+            url: "https://secure.notion-static.com/image.png"
+          },
+          caption: []
+        }
+      },
+      {
+        fileResolver: (_file, warnings) => {
+          warnings.push({
+            code: "asset_manifest_missing",
+            message: "本地资产 manifest 不存在，无法上传恢复文件"
+          });
+          return null;
+        }
+      }
+    );
+
+    expect(conversion.action).toBe("skip");
+    expect(conversion.warnings[0]?.code).toBe("asset_manifest_missing");
   });
 
   it("preserves external media URLs", () => {
@@ -353,6 +420,45 @@ describe("restore page property conversion", () => {
     expect(conversion.warnings[0]?.code).toBe("relation_property_unresolved");
   });
 
+  it("restores file properties with file upload objects from the resolver", () => {
+    const conversion = convertPagePropertiesForRestore({
+      sourceProperties: {
+        Name: { type: "title", title: [{ type: "text", text: { content: "Doc", link: null }, plain_text: "Doc" }] },
+        File: {
+          type: "files",
+          files: [
+            {
+              type: "file",
+              name: "doc.pdf",
+              file: { url: "https://secure.notion-static.com/doc.pdf" }
+            }
+          ]
+        }
+      },
+      fallbackTitle: "Doc",
+      pageId: "page-1",
+      fileResolver: () => ({
+        type: "file_upload",
+        file_upload: {
+          id: "upload-1"
+        }
+      })
+    });
+
+    expect(conversion.properties.File).toEqual({
+      files: [
+        {
+          type: "file_upload",
+          name: "doc.pdf",
+          file_upload: {
+            id: "upload-1"
+          }
+        }
+      ]
+    });
+    expect(conversion.warnings).toEqual([]);
+  });
+
   it("skips values that are not present in the restored data source schema", () => {
     const conversion = convertPagePropertiesForRestore({
       sourceProperties: {
@@ -370,6 +476,13 @@ describe("restore page property conversion", () => {
       Name: { title: [{ type: "text", text: { content: "Task" } }] }
     });
     expect(conversion.warnings[0]?.code).toBe("page_property_schema_missing");
+  });
+});
+
+describe("restore file upload filenames", () => {
+  it("preserves Chinese filenames while removing path-unsafe characters", () => {
+    expect(safeUploadFileName("会议纪要/第1版?.pdf")).toBe("会议纪要_第1版_.pdf");
+    expect(safeUploadFileName("____.pdf")).toBe("____.pdf");
   });
 });
 

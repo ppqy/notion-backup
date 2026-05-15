@@ -4,7 +4,7 @@
 
 Backup artifacts are durable filesystem outputs under `BACKUP_ROOT`. JSON artifacts are the canonical backup record. Markdown is a derived human-readable/import helper and must not be treated as the source of truth when JSON is available.
 
-Restore/import is a future best-effort workflow. It can recreate content into new Notion objects, but it cannot preserve original Notion object IDs, edit history, permissions, or every read-only/computed value.
+Restore/import is a best-effort workflow. It can recreate content into new Notion objects, but it cannot preserve original Notion object IDs, edit history, permissions, or every read-only/computed value.
 
 ## Scenario: JSON-Canonical Backup Artifacts
 
@@ -123,7 +123,7 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Data source entry page creation under a restored data source can restore supported writable page property values; unsupported/read-only values must be warned.
 * Block conversion must strip response-only fields and downgrade unsupported rich text mentions to plain text with warnings.
 * Child pages are restored recursively when their page JSON artifact exists.
-* Notion-hosted/local file upload restore is not implemented in this MVP. External media URLs may be reattached; Notion-hosted file blocks must warn and skip.
+* Restore should upload downloaded Notion-hosted/local asset files through Notion File Uploads when `assets/<page-id>/manifest.json` has a matching downloaded file. External media URLs may still be reattached directly.
 * The restore report uses shared `RestoreReport` DTO and records status, mappings, item results, warnings, errors, and `manifestPath`.
 
 ### 4. Validation & Error Matrix
@@ -151,7 +151,7 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Block conversion tests must assert response-only rich text fields are removed.
 * Mention downgrade tests must assert warnings are emitted.
 * Child page conversion tests must assert recursive page restore action.
-* File block tests must assert Notion-hosted file upload is skipped with warning until upload restore exists.
+* File block tests must assert external media stays external, downloaded Notion-hosted files become `file_upload` payloads, and missing/skipped assets warn.
 * Page artifact warning tests must assert skipped properties/comments are reported.
 * Data source restore tests must assert schema conversion, page property conversion, data source summary/mapping fields, and relation/schema warning behavior.
 * Status resolution tests must assert skipped-only restores fail and mixed restores are partial.
@@ -200,7 +200,7 @@ await appendBlocks(restoredPage.id, artifact.blocks);
 * Page property conversion should keep writable values: title, rich text, number, checkbox, select, multi-select, status, date, URL, email, phone number, place, external file references, and mapped relations.
 * Select/status/multi-select values must be sent by name/color/description, not old option IDs.
 * Rich text and property values must strip response-only fields such as `plain_text`, `href`, and old option IDs.
-* Local/Notion-hosted file values remain out of scope; external file references may be preserved.
+* Local/Notion-hosted file values should use downloaded asset manifests and single-part File Uploads when files are available and at or below the single-part size limit. External file references may be preserved.
 * Relation values may be written only for pages that already have an old-to-new page mapping. Unmapped relations are skipped with warnings.
 
 ### 4. Validation & Error Matrix
@@ -216,14 +216,14 @@ await appendBlocks(restoredPage.id, artifact.blocks);
 ### 5. Good/Base/Bad Cases
 
 * Good: selected data source restores a new data source, creates entry pages under it, records data source and page mappings, writes supported properties, and warns for unsupported fields.
-* Base: data source has relation/formula/rollup/local files; stable schema and values restore, unsupported parts are visible as warnings, and status may be partial.
+* Base: data source has relation/formula/rollup/missing or oversized local files; stable schema and values restore, unsupported parts are visible as warnings, and status may be partial.
 * Bad: restore silently drops properties, sends old select option IDs to a new data source, or claims formulas/rollups/relations were fully restored when they were skipped.
 
 ### 6. Tests Required
 
 * Schema conversion tests assert writable schema output and warning codes for skipped relation/formula/rollup properties.
 * Page property conversion tests assert response-only fields are stripped and supported values are retained.
-* File property tests assert external files are preserved and Notion/local files warn.
+* File property tests assert external files are preserved, downloaded Notion/local files become `file_upload` values, and missing/skipped assets warn.
 * Relation tests assert mapped relation IDs are rewritten and unmapped IDs warn.
 * Restore status tests assert created data sources count toward partial success.
 * Shared DTO/UI changes must pass `npm run lint`, `npm run build`, and `npm test`.
@@ -242,6 +242,71 @@ properties.Status = { status: { id: oldStatusOptionId } };
 ```ts
 // Recreate values by stable names/options and let Notion assign new IDs.
 properties.Status = { status: { name: oldStatusOptionName } };
+```
+
+## Scenario: Restore Downloaded Files Through File Uploads
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to restore handling for media/file blocks, `files` page properties, asset manifests, or Notion File Upload integration.
+
+### 2. Signatures
+
+* Asset manifest path: `runs/<run-key>/assets/<page-id>/manifest.json`.
+* Asset manifest entry: backup `DownloadResult` with `candidate.url`, `candidate.name`, `status`, and either downloaded `path`/`bytes` or skipped `reason`.
+* Notion wrapper methods:
+  * `createSinglePartFileUpload({ filename, contentType })`
+  * `sendFileUpload({ fileUploadId, filename, data })`
+* Restore output mapping: `RestoreReport.mappings.files[oldFileUrl] = newFileUploadId`.
+
+### 3. Contracts
+
+* Restore only uploads files already downloaded by backup. Do not fetch expired Notion-hosted URLs during restore.
+* A backed-up `file` media block or `files` property value may become `{ type: "file_upload", file_upload: { id } }` when a matching downloaded asset exists.
+* External media/file URLs should keep using `external` payloads unless a future feature explicitly imports external URLs.
+* Single-part upload is limited to files at or below 20 MiB. Larger files must warn until multipart upload is implemented.
+* Upload IDs are cached per restore run by original file URL so repeated references do not upload the same file more than once.
+* File upload filenames should preserve Unicode names from Notion/file metadata. Only replace path separators, control characters, and filesystem/API-unsafe punctuation such as `< > : " / \ | ? *`.
+* Missing/skipped assets are warnings, not silent drops and not whole-run failures.
+
+### 4. Validation & Error Matrix
+
+* Missing `assets/<page-id>/manifest.json` -> `asset_manifest_missing` warning.
+* No manifest entry for the original file URL -> `asset_not_downloaded` warning.
+* Manifest entry has `status: "skipped"` -> `asset_download_skipped` warning with the backup skip reason.
+* Downloaded file path missing -> `asset_file_missing` warning.
+* Downloaded file is larger than 20 MiB -> `file_upload_multipart_required` warning.
+* Notion upload response lacks an ID or does not finish as `uploaded` -> `file_upload_failed` warning.
+* Restore cancellation requested before upload or before the following Notion write -> terminal canceled restore behavior.
+
+### 5. Good/Base/Bad Cases
+
+* Good: a backed-up Notion-hosted PDF block has a matching downloaded asset, restore uploads it once, appends a `file_upload` block, and records the old URL to new upload ID mapping.
+* Base: a page has mixed external and Notion-hosted file properties; external values remain external, downloaded Notion-hosted values become file uploads, and missing local assets warn.
+* Bad: restore tries to reuse the original expired Notion-hosted file URL, silently drops the file, or uploads the same backed-up file repeatedly for every reference.
+
+### 6. Tests Required
+
+* Block conversion tests assert `file_upload` payload creation when a resolver supplies an upload and warning preservation when an asset cannot upload.
+* Page property conversion tests assert `files` values can include `file_upload` entries while external entries remain unchanged.
+* Filename tests assert Chinese/Unicode names are preserved while path-unsafe characters are replaced.
+* Restore execution changes should pass `npm test`, `npm run lint`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Original Notion-hosted URLs expire; restoring them as external links is unreliable.
+return { type: "file", file: { type: "external", external: { url: oldFileUrl } } };
+```
+
+#### Correct
+
+```ts
+const uploadId = await uploadDownloadedAsset(asset.path);
+report.mappings.files[oldFileUrl] = uploadId;
+return { type: "file", file: { type: "file_upload", file_upload: { id: uploadId } } };
 ```
 
 ## Scenario: Restore Run History, Preflight, and Cooperative Cancellation

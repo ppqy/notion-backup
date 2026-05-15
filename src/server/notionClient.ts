@@ -1,4 +1,4 @@
-import { Client } from "@notionhq/client";
+import { Client, type CreateFileUploadResponse, type SendFileUploadResponse } from "@notionhq/client";
 import { badRequest, unauthorized } from "./errors.js";
 
 export const NOTION_VERSION = "2026-03-11";
@@ -39,22 +39,50 @@ export class NotionClient {
   }
 
   async request<T = NotionObject>(options: RequestOptions): Promise<T> {
+    return this.executeWithRetry(options.path, async () => {
+      const request = this.client.request.bind(this.client) as <R>(args: {
+        path: string;
+        method: string;
+        query?: Record<string, string | number | boolean>;
+        body?: unknown;
+      }) => Promise<R>;
+      return request<T>({
+        path: options.path,
+        method: options.method.toLowerCase(),
+        query: options.query,
+        body: options.body
+      });
+    });
+  }
+
+  async createSinglePartFileUpload(input: { filename: string; contentType?: string }): Promise<CreateFileUploadResponse> {
+    return this.executeWithRetry("file_uploads", () =>
+      this.client.fileUploads.create({
+        mode: "single_part",
+        filename: input.filename,
+        ...(input.contentType ? { content_type: input.contentType } : {})
+      })
+    );
+  }
+
+  async sendFileUpload(input: { fileUploadId: string; filename: string; data: Blob }): Promise<SendFileUploadResponse> {
+    return this.executeWithRetry(`file_uploads/${input.fileUploadId}/send`, () =>
+      this.client.fileUploads.send({
+        file_upload_id: input.fileUploadId,
+        file: {
+          filename: input.filename,
+          data: input.data
+        }
+      })
+    );
+  }
+
+  private async executeWithRetry<T>(path: string, operation: () => Promise<T>): Promise<T> {
     let attempt = 0;
     while (true) {
       await this.throttle();
       try {
-        const request = this.client.request.bind(this.client) as <R>(args: {
-          path: string;
-          method: string;
-          query?: Record<string, string | number | boolean>;
-          body?: unknown;
-        }) => Promise<R>;
-        return await request<T>({
-          path: options.path,
-          method: options.method.toLowerCase(),
-          query: options.query,
-          body: options.body
-        });
+        return await operation();
       } catch (error) {
         const normalized = normalizeNotionError(error);
         if (!shouldRetry(normalized, attempt)) {
@@ -64,7 +92,7 @@ export class NotionClient {
         this.onLog?.({
           level: "warn",
           event: "notion_retry",
-          path: options.path,
+          path,
           status: normalized.status,
           attempt: attempt + 1,
           waitMs

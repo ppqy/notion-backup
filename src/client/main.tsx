@@ -1128,7 +1128,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
         <h2>恢复到 Notion</h2>
         {report ? <span className="muted">最近恢复：{formatDate(report.startedAt)}</span> : null}
       </div>
-      <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、视图、本地文件和无法映射的关系会记录为警告。</p>
+      <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、视图、未下载或过大的文件和无法映射的关系会记录为警告。</p>
       <form className="inline-form" onSubmit={submitPreflight}>
         <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
         <button className="primary" type="submit" disabled={!canRestore || busy}>

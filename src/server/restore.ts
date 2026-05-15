@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestorePreflight, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
+import type { DownloadResult } from "./assets.js";
 import { badRequest, notFound } from "./errors.js";
 import { NotionApiError, NotionClient, type NotionObject } from "./notionClient.js";
 import { extractTitle } from "./repositories/notionRepository.js";
@@ -47,11 +48,22 @@ type BlockConversion =
       warnings: RestoreWarning[];
     };
 
+type RestoredFilePayload = {
+  type: "file_upload";
+  file_upload: {
+    id: string;
+  };
+};
+
+type FileUploadResolver = (file: NotionObject, warnings: RestoreWarning[]) => RestoredFilePayload | null;
+
 type RestoreContext = {
   notion: NotionClient;
   runDir: string;
   report: RestoreReport;
   restoringPages: Set<string>;
+  assetManifests: Map<string, DownloadResult[] | null>;
+  uploadedFiles: Map<string, RestoredFilePayload>;
   shouldCancel?: () => boolean;
   onProgress?: (report: RestoreReport) => void | Promise<void>;
 };
@@ -73,6 +85,7 @@ export class RestoreCanceledError extends Error {
 
 const RESTORE_LATEST_FILE = "restore-latest.json";
 const RESTORE_CHILD_CHUNK_SIZE = 100;
+const SINGLE_PART_FILE_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 const READ_ONLY_PAGE_PROPERTY_TYPES = new Set(["created_by", "created_time", "last_edited_by", "last_edited_time", "formula", "rollup", "unique_id", "verification"]);
 const UNSUPPORTED_SCHEMA_PROPERTY_TYPES = new Set(["relation", "rollup", "formula", "button", "location", "verification", "last_visited_time"]);
 
@@ -98,6 +111,8 @@ export async function executeRestoreToNotion(input: { runId: string; targetParen
     runDir,
     report,
     restoringPages: new Set(),
+    assetManifests: new Map(),
+    uploadedFiles: new Map(),
     shouldCancel: input.hooks?.shouldCancel,
     onProgress: input.hooks?.onProgress
   };
@@ -403,7 +418,7 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, pare
       addWarning(context.report, warning);
     }
     const title = extractTitle(artifact.page) || fallbackTitle || "恢复页面";
-    const createBody = createPageBody(parent, artifact, title, context.report, pageId);
+    const createBody = await createPageBody(context, parent, artifact, title, pageId);
     assertRestoreNotCanceled(context);
     const restoredPage = await context.notion.createPage(createBody);
     const restoredPageId = String(restoredPage.id ?? "");
@@ -433,7 +448,7 @@ async function appendBlocks(context: RestoreContext, parentBlockId: string, bloc
     assertRestoreNotCanceled(context);
     const oldBlockId = String(block.id ?? "");
     const rawChildBlocks = Array.isArray(block.children) ? (block.children as NotionObject[]) : [];
-    const conversion = convertBlockForRestore(block);
+    const conversion = await convertBlockForRestoreWithAssets(context, block, sourcePageId);
     for (const warning of conversion.warnings) {
       addWarning(context.report, {
         ...warning,
@@ -534,7 +549,14 @@ async function appendReturnedChildren(
   }
 }
 
-export function convertBlockForRestore(block: NotionObject): BlockConversion {
+async function convertBlockForRestoreWithAssets(context: RestoreContext, block: NotionObject, sourcePageId: string): Promise<BlockConversion> {
+  const type = typeof block.type === "string" ? block.type : "";
+  const payload = getPayload(block, type);
+  const fileResolver = await prepareFileUploadResolver(context, sourcePageId, mediaPayloadNeedsUpload(type, payload) ? [payload] : []);
+  return convertBlockForRestore(block, { fileResolver });
+}
+
+export function convertBlockForRestore(block: NotionObject, options: { fileResolver?: FileUploadResolver } = {}): BlockConversion {
   const type = typeof block.type === "string" ? block.type : "";
   const oldBlockId = typeof block.id === "string" ? block.id : undefined;
   const payload = getPayload(block, type);
@@ -618,9 +640,14 @@ export function convertBlockForRestore(block: NotionObject): BlockConversion {
     case "file":
     case "pdf":
     case "audio": {
-      const media = sanitizeMediaPayload(payload, warnings);
+      const media = sanitizeMediaPayload(payload, warnings, options.fileResolver);
       if (!media) {
-        return skipBlock("local_file_upload_not_implemented", `${type} 区块需要本地文件上传，当前版本已跳过`, oldBlockId);
+        return warnings.length > 0
+          ? {
+              action: "skip",
+              warnings
+            }
+          : skipBlock("local_file_upload_not_implemented", `${type} 区块需要本地文件上传，当前版本已跳过`, oldBlockId);
       }
       return appendBlock(type, media, childBlocks, warnings);
     }
@@ -686,7 +713,8 @@ function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKe
   };
 }
 
-function createPageBody(parent: RestoreParent, artifact: PageArtifact, title: string, report: RestoreReport, oldPageId: string): NotionObject {
+async function createPageBody(context: RestoreContext, parent: RestoreParent, artifact: PageArtifact, title: string, oldPageId: string): Promise<NotionObject> {
+  const report = context.report;
   const sourcePage = artifact.page;
   const iconWarnings: RestoreWarning[] = [];
   const coverWarnings: RestoreWarning[] = [];
@@ -714,7 +742,8 @@ function createPageBody(parent: RestoreParent, artifact: PageArtifact, title: st
           fallbackTitle: title,
           pageId: oldPageId,
           allowedPropertyNames: parent.allowedPropertyNames,
-          pageMappings: report.mappings.pages
+          pageMappings: report.mappings.pages,
+          fileResolver: await prepareFileUploadResolver(context, oldPageId, collectPagePropertyFileObjects(sourcePage.properties, parent.allowedPropertyNames))
         })
       : {
           properties: {
@@ -829,6 +858,186 @@ async function readDataSourceEntries(runDir: string, dataSourceId: string): Prom
   return entries.filter((entry): entry is NotionObject => Boolean(entry && typeof entry === "object"));
 }
 
+async function prepareFileUploadResolver(context: RestoreContext, pageId: string, fileObjects: NotionObject[]): Promise<FileUploadResolver | undefined> {
+  const uploadResults = new Map<string, { payload?: RestoredFilePayload; warning?: RestoreWarning }>();
+  for (const fileObject of fileObjects) {
+    const fileUrl = fileUrlFromObject(fileObject);
+    if (!fileUrl || uploadResults.has(fileUrl)) {
+      continue;
+    }
+    uploadResults.set(fileUrl, await fileUploadPayloadForAsset(context, pageId, fileUrl, fileNameFromObject(fileObject)));
+  }
+  if (uploadResults.size === 0) {
+    return undefined;
+  }
+  return (fileObject, warnings) => {
+    const fileUrl = fileUrlFromObject(fileObject);
+    const result = fileUrl ? uploadResults.get(fileUrl) : undefined;
+    if (result?.payload) {
+      return result.payload;
+    }
+    warnings.push(
+      result?.warning ?? {
+        code: "file_upload_source_missing",
+        message: "文件缺少可恢复的原始 URL，已跳过"
+      }
+    );
+    return null;
+  };
+}
+
+async function fileUploadPayloadForAsset(context: RestoreContext, pageId: string, fileUrl: string, fallbackName: string): Promise<{ payload?: RestoredFilePayload; warning?: RestoreWarning }> {
+  const cached = context.uploadedFiles.get(fileUrl);
+  if (cached) {
+    return { payload: cached };
+  }
+  const manifest = await loadAssetManifest(context, pageId);
+  if (!manifest) {
+    return {
+      warning: {
+        code: "asset_manifest_missing",
+        message: "本地资产 manifest 不存在，无法上传恢复文件",
+        objectId: pageId,
+        details: { fileUrl }
+      }
+    };
+  }
+  const result = manifest.find((item) => item.candidate.url === fileUrl);
+  if (!result) {
+    return {
+      warning: {
+        code: "asset_not_downloaded",
+        message: "备份中没有找到对应的本地文件资产，已跳过文件恢复",
+        objectId: pageId,
+        details: { fileUrl }
+      }
+    };
+  }
+  if (result.status === "skipped") {
+    return {
+      warning: {
+        code: "asset_download_skipped",
+        message: `文件备份时未下载，已跳过文件恢复：${result.reason}`,
+        objectId: pageId,
+        details: { fileUrl }
+      }
+    };
+  }
+
+  const localPath = resolveDownloadedAssetPath(context.runDir, pageId, result.path);
+  if (!localPath) {
+    return {
+      warning: {
+        code: "asset_file_missing",
+        message: "本地资产文件不存在，已跳过文件恢复",
+        objectId: pageId,
+        details: { fileUrl, path: result.path }
+      }
+    };
+  }
+  let fileInfo: Awaited<ReturnType<typeof stat>>;
+  try {
+    fileInfo = await stat(localPath);
+  } catch {
+    return {
+      warning: {
+        code: "asset_file_missing",
+        message: "本地资产文件不存在，已跳过文件恢复",
+        objectId: pageId,
+        details: { fileUrl, path: result.path }
+      }
+    };
+  }
+  if (fileInfo.size > SINGLE_PART_FILE_UPLOAD_LIMIT_BYTES) {
+    return {
+      warning: {
+        code: "file_upload_multipart_required",
+        message: "文件超过 20 MiB，需要 multipart 上传，当前版本已跳过",
+        objectId: pageId,
+        details: { fileUrl, path: result.path, bytes: fileInfo.size }
+      }
+    };
+  }
+
+  assertRestoreNotCanceled(context);
+  const filename = safeUploadFileName(fallbackName || result.candidate.name || path.basename(localPath));
+  const contentType = inferContentType(filename);
+  try {
+    const upload = await context.notion.createSinglePartFileUpload({
+      filename,
+      contentType
+    });
+    const uploadId = String(upload.id ?? "");
+    if (!uploadId) {
+      return {
+        warning: {
+          code: "file_upload_failed",
+          message: "Notion 未返回文件上传 ID，已跳过文件恢复",
+          objectId: pageId,
+          details: { fileUrl }
+        }
+      };
+    }
+    assertRestoreNotCanceled(context);
+    const bytes = await readFile(localPath);
+    const sent = await context.notion.sendFileUpload({
+      fileUploadId: uploadId,
+      filename,
+      data: new Blob([new Uint8Array(bytes)], { type: contentType })
+    });
+    if (sent.status !== "uploaded") {
+      return {
+        warning: {
+          code: "file_upload_failed",
+          message: `Notion 文件上传未完成，状态：${sent.status}`,
+          objectId: pageId,
+          details: { fileUrl, fileUploadId: uploadId }
+        }
+      };
+    }
+    const payload: RestoredFilePayload = {
+      type: "file_upload",
+      file_upload: {
+        id: uploadId
+      }
+    };
+    context.uploadedFiles.set(fileUrl, payload);
+    context.report.mappings.files[fileUrl] = uploadId;
+    return { payload };
+  } catch (error) {
+    if (error instanceof RestoreCanceledError) {
+      throw error;
+    }
+    return {
+      warning: {
+        code: "file_upload_failed",
+        message: `文件上传到 Notion 失败，已跳过文件恢复：${errorMessage(error)}`,
+        objectId: pageId,
+        details: { fileUrl }
+      }
+    };
+  }
+}
+
+async function loadAssetManifest(context: RestoreContext, pageId: string): Promise<DownloadResult[] | null> {
+  if (context.assetManifests.has(pageId)) {
+    return context.assetManifests.get(pageId) ?? null;
+  }
+  const manifestPath = path.join(context.runDir, "assets", pageId, "manifest.json");
+  if (!existsSync(manifestPath)) {
+    context.assetManifests.set(pageId, null);
+    return null;
+  }
+  const manifest = await readJson<unknown>(manifestPath).catch(() => null);
+  if (!Array.isArray(manifest)) {
+    context.assetManifests.set(pageId, null);
+    return null;
+  }
+  const results = manifest.filter(isDownloadResult);
+  context.assetManifests.set(pageId, results);
+  return results;
+}
+
 async function readJson<T>(filePath: string): Promise<T> {
   const text = await readFile(filePath, "utf8");
   return JSON.parse(text) as T;
@@ -840,6 +1049,134 @@ function pageArtifactPath(runDir: string, pageId: string): string {
 
 function dataSourceArtifactPath(runDir: string, dataSourceId: string): string {
   return path.join(runDir, "data-sources", dataSourceId);
+}
+
+function isDownloadResult(value: unknown): value is DownloadResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  const candidate = record.candidate;
+  if (!candidate || typeof candidate !== "object") {
+    return false;
+  }
+  const candidateRecord = candidate as Record<string, unknown>;
+  if (typeof candidateRecord.url !== "string" || typeof candidateRecord.name !== "string") {
+    return false;
+  }
+  if (record.status === "downloaded") {
+    return typeof record.path === "string" && typeof record.bytes === "number";
+  }
+  return record.status === "skipped" && typeof record.reason === "string";
+}
+
+function resolveDownloadedAssetPath(runDir: string, pageId: string, storedPath: string): string | null {
+  if (existsSync(storedPath)) {
+    return storedPath;
+  }
+  const fallback = path.join(runDir, "assets", pageId, path.basename(storedPath));
+  return existsSync(fallback) ? fallback : null;
+}
+
+function collectPagePropertyFileObjects(sourceProperties: unknown, allowedPropertyNames?: Set<string>): NotionObject[] {
+  if (!sourceProperties || typeof sourceProperties !== "object") {
+    return [];
+  }
+  const files: NotionObject[] = [];
+  for (const [propertyName, rawProperty] of Object.entries(sourceProperties as Record<string, unknown>)) {
+    if (!rawProperty || typeof rawProperty !== "object") {
+      continue;
+    }
+    if (allowedPropertyNames && !allowedPropertyNames.has(propertyName)) {
+      continue;
+    }
+    const property = rawProperty as NotionObject;
+    if (property.type !== "files" || !Array.isArray(property.files)) {
+      continue;
+    }
+    for (const file of property.files) {
+      if (file && typeof file === "object") {
+        files.push(file as NotionObject);
+      }
+    }
+  }
+  return files;
+}
+
+function mediaPayloadNeedsUpload(type: string, payload: NotionObject): boolean {
+  return ["image", "video", "file", "pdf", "audio"].includes(type) && payload.type === "file" && typeof getPayload(payload, "file").url === "string";
+}
+
+function fileUrlFromObject(fileObject: NotionObject): string | null {
+  if (fileObject.type !== "file") {
+    return null;
+  }
+  const file = getPayload(fileObject, "file");
+  return typeof file.url === "string" && file.url ? file.url : null;
+}
+
+function fileNameFromObject(fileObject: NotionObject): string {
+  if (typeof fileObject.name === "string" && fileObject.name) {
+    return fileObject.name;
+  }
+  const fileUrl = fileUrlFromObject(fileObject);
+  if (!fileUrl) {
+    return "file";
+  }
+  try {
+    const parsed = new URL(fileUrl);
+    return parsed.pathname.split("/").filter(Boolean).at(-1) || "file";
+  } catch {
+    return "file";
+  }
+}
+
+export function safeUploadFileName(value: string): string {
+  const sanitized = Array.from(value.normalize("NFC").replace(/[\p{C}<>:"/\\|?*]/gu, "_").trim())
+    .slice(0, 180)
+    .join("");
+  return sanitized && sanitized !== "." && sanitized !== ".." ? sanitized : "file";
+}
+
+function inferContentType(fileName: string): string {
+  const extension = path.extname(fileName).toLowerCase();
+  switch (extension) {
+    case ".avif":
+      return "image/avif";
+    case ".gif":
+      return "image/gif";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".webp":
+      return "image/webp";
+    case ".mp3":
+      return "audio/mpeg";
+    case ".m4a":
+      return "audio/mp4";
+    case ".wav":
+      return "audio/wav";
+    case ".mp4":
+      return "video/mp4";
+    case ".mov":
+      return "video/quicktime";
+    case ".pdf":
+      return "application/pdf";
+    case ".csv":
+      return "text/csv";
+    case ".json":
+      return "application/json";
+    case ".md":
+      return "text/markdown";
+    case ".txt":
+      return "text/plain";
+    default:
+      return "application/octet-stream";
+  }
 }
 
 function extractCreatedDataSourceId(response: NotionObject): string | null {
@@ -1022,6 +1359,7 @@ export function convertPagePropertiesForRestore(input: {
   pageId?: string;
   allowedPropertyNames?: Set<string>;
   pageMappings?: Record<string, string>;
+  fileResolver?: FileUploadResolver;
 }): { properties: Record<string, NotionObject>; warnings: RestoreWarning[] } {
   const warnings: RestoreWarning[] = [];
   const properties: Record<string, NotionObject> = {};
@@ -1048,6 +1386,7 @@ export function convertPagePropertiesForRestore(input: {
         fallbackTitle: input.fallbackTitle,
         pageId: input.pageId,
         pageMappings: input.pageMappings,
+        fileResolver: input.fileResolver,
         warnings
       });
       if (converted) {
@@ -1142,6 +1481,7 @@ function convertPagePropertyValue(input: {
   fallbackTitle: string;
   pageId?: string;
   pageMappings?: Record<string, string>;
+  fileResolver?: FileUploadResolver;
   warnings: RestoreWarning[];
 }): NotionObject | null {
   const value = propertyValueObject(input.property, input.propertyItem, input.propertyType);
@@ -1316,7 +1656,7 @@ function sanitizeDateValue(value: unknown): NotionObject | null {
 
 function sanitizeFilePropertyValue(
   value: unknown,
-  input: { propertyName: string; propertyType: string; pageId?: string; warnings: RestoreWarning[] }
+  input: { propertyName: string; propertyType: string; pageId?: string; fileResolver?: FileUploadResolver; warnings: RestoreWarning[] }
 ): NotionObject[] | null {
   if (!Array.isArray(value)) {
     return [];
@@ -1340,7 +1680,20 @@ function sanitizeFilePropertyValue(
       }
       continue;
     }
-    input.warnings.push(propertyWarning("file_property_upload_not_implemented", `文件属性包含 Notion 托管或本地文件，当前版本已跳过：${input.propertyName}`, input.pageId, input.propertyName, input.propertyType));
+    const warningCount = input.warnings.length;
+    const uploaded = input.fileResolver?.(record, input.warnings);
+    if (uploaded) {
+      files.push({
+        ...uploaded,
+        name: typeof record.name === "string" && record.name ? record.name : "file"
+      });
+      continue;
+    }
+    if (input.warnings.length === warningCount) {
+      input.warnings.push(
+        propertyWarning("file_property_upload_not_implemented", `文件属性包含 Notion 托管或本地文件，当前版本已跳过：${input.propertyName}`, input.pageId, input.propertyName, input.propertyType)
+      );
+    }
   }
   return files.length > 0 || value.length === 0 ? files : null;
 }
@@ -1485,7 +1838,7 @@ function textRichText(value: string): NotionObject[] {
   ];
 }
 
-function sanitizeMediaPayload(payload: NotionObject, warnings: RestoreWarning[]): NotionObject | null {
+function sanitizeMediaPayload(payload: NotionObject, warnings: RestoreWarning[], fileResolver?: FileUploadResolver): NotionObject | null {
   const caption = sanitizeRichTextArray(payload.caption, warnings);
   const type = payload.type;
   if (type === "external") {
@@ -1500,10 +1853,15 @@ function sanitizeMediaPayload(payload: NotionObject, warnings: RestoreWarning[])
       };
     }
   }
-  warnings.push({
-    code: "file_upload_not_implemented",
-    message: "本地文件上传恢复尚未实现，已跳过 Notion 托管文件"
-  });
+  if (type === "file") {
+    const uploaded = fileResolver?.(payload, warnings);
+    if (uploaded) {
+      return {
+        ...uploaded,
+        caption
+      };
+    }
+  }
   return null;
 }
 

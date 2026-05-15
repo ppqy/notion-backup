@@ -10,8 +10,11 @@ import type { BackupArtifactKind, BackupManifestCapability, BackupManifestMetada
 const KNOWN_CAPABILITIES = new Set<string>(Object.values(BACKUP_MANIFEST_CAPABILITY));
 const KNOWN_ARTIFACT_KINDS = new Set<string>(Object.values(BACKUP_ARTIFACT_KIND));
 
+type BackupManifestPlanInput = Pick<BackupPlan, "includeComments" | "downloadNotionFiles" | "mirrorExternalFiles"> &
+  Partial<Pick<BackupPlan, "selectedContent">>;
+
 export function backupManifestMetadataForPlan(
-  plan: Pick<BackupPlan, "includeComments" | "downloadNotionFiles" | "mirrorExternalFiles">
+  plan: BackupManifestPlanInput
 ): Omit<BackupManifestMetadata, "legacy"> {
   const capabilities: BackupManifestCapability[] = [
     BACKUP_MANIFEST_CAPABILITY.PageJson,
@@ -30,6 +33,10 @@ export function backupManifestMetadataForPlan(
     BACKUP_ARTIFACT_KIND.Markdown
   ];
 
+  if (plan.selectedContent?.some((selected) => selected.objectType === "data_source")) {
+    capabilities.push(BACKUP_MANIFEST_CAPABILITY.DataSourceViews);
+    artifactKinds.push(BACKUP_ARTIFACT_KIND.DataSourceViews);
+  }
   if (plan.includeComments) {
     capabilities.push(BACKUP_MANIFEST_CAPABILITY.PageComments);
   }

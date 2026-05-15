@@ -46,10 +46,121 @@ type Manifest = {
   skippedFiles: number;
 };
 
+export const DATA_SOURCE_VIEWS_ARTIFACT_FILENAME = "views.json";
+
+type DataSourceViewsArtifactStatus = "succeeded" | "partial_failed" | "failed";
+
+export type DataSourceViewsArtifactWarning = {
+  code: string;
+  message: string;
+  viewId?: string;
+  details?: Record<string, unknown>;
+};
+
+export type DataSourceViewsArtifact = {
+  dataSourceId: string;
+  status: DataSourceViewsArtifactStatus;
+  views: NotionObject[];
+  warnings: DataSourceViewsArtifactWarning[];
+};
+
+type DataSourceViewsClient = {
+  listDataSourceViews(dataSourceId: string, startCursor?: string): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }>;
+  retrieveView(viewId: string): Promise<NotionObject>;
+};
+
+type DataSourceViewsLogger = Pick<RunLogger, "write">;
+
 class BackupCanceledError extends Error {
   constructor() {
     super("备份已取消");
   }
+}
+
+export async function collectDataSourceViewsArtifact(input: {
+  dataSourceId: string;
+  notion: DataSourceViewsClient;
+  logger: DataSourceViewsLogger;
+  ensureNotCanceled?: () => void;
+}): Promise<DataSourceViewsArtifact> {
+  const ensureNotCanceled = input.ensureNotCanceled ?? (() => undefined);
+  const views: NotionObject[] = [];
+  const warnings: DataSourceViewsArtifactWarning[] = [];
+  let startCursor: string | undefined;
+
+  do {
+    ensureNotCanceled();
+    let response: { results: NotionObject[]; has_more: boolean; next_cursor: string | null };
+    try {
+      response = await input.notion.listDataSourceViews(input.dataSourceId, startCursor);
+    } catch (error) {
+      const message = errorMessage(error);
+      const warning: DataSourceViewsArtifactWarning = {
+        code: "data_source_views_list_failed",
+        message: `无法读取数据源视图：${message}`,
+        details: { dataSourceId: input.dataSourceId }
+      };
+      warnings.push(warning);
+      await input.logger.write("warn", "data_source_views_failed", {
+        dataSourceId: input.dataSourceId,
+        error: message
+      });
+      return {
+        dataSourceId: input.dataSourceId,
+        status: "failed",
+        views,
+        warnings
+      };
+    }
+
+    for (const reference of response.results) {
+      ensureNotCanceled();
+      const viewId = readObjectId(reference);
+      if (!viewId) {
+        const warning: DataSourceViewsArtifactWarning = {
+          code: "data_source_view_reference_invalid",
+          message: "数据源视图引用缺少 ID，已跳过",
+          details: { dataSourceId: input.dataSourceId }
+        };
+        warnings.push(warning);
+        await input.logger.write("warn", "data_source_view_reference_invalid", {
+          dataSourceId: input.dataSourceId
+        });
+        continue;
+      }
+
+      try {
+        views.push(await input.notion.retrieveView(viewId));
+      } catch (error) {
+        const message = errorMessage(error);
+        const warning: DataSourceViewsArtifactWarning = {
+          code: "data_source_view_retrieve_failed",
+          message: `无法读取数据源视图 ${viewId}：${message}`,
+          viewId,
+          details: { dataSourceId: input.dataSourceId }
+        };
+        warnings.push(warning);
+        await input.logger.write("warn", "data_source_view_failed", {
+          dataSourceId: input.dataSourceId,
+          viewId,
+          error: message
+        });
+      }
+    }
+
+    startCursor = response.has_more && response.next_cursor ? response.next_cursor : undefined;
+  } while (startCursor);
+
+  return {
+    dataSourceId: input.dataSourceId,
+    status: warnings.length > 0 ? "partial_failed" : "succeeded",
+    views,
+    warnings
+  };
+}
+
+export async function writeDataSourceViewsArtifact(directory: string, artifact: DataSourceViewsArtifact): Promise<void> {
+  await writeJson(path.join(directory, DATA_SOURCE_VIEWS_ARTIFACT_FILENAME), artifact);
 }
 
 export class BackupWorker {
@@ -276,6 +387,13 @@ export class BackupWorker {
     const directory = path.join(runDir, "data-sources", dataSourceId);
     await mkdir(directory, { recursive: true });
     await writeJson(path.join(directory, "schema.json"), dataSource);
+    const viewsArtifact = await collectDataSourceViewsArtifact({
+      dataSourceId,
+      notion,
+      logger,
+      ensureNotCanceled: () => this.ensureNotCanceled(runId)
+    });
+    await writeDataSourceViewsArtifact(directory, viewsArtifact);
     const entryResults = [];
     for (const entry of entries) {
       this.ensureNotCanceled(runId);
@@ -288,6 +406,12 @@ export class BackupWorker {
       dataSourceId,
       title: extractTitle(dataSource),
       entries: entryResults.length,
+      views: {
+        status: viewsArtifact.status,
+        count: viewsArtifact.views.length,
+        warnings: viewsArtifact.warnings.length,
+        path: relativeToBackupRoot(path.join(directory, DATA_SOURCE_VIEWS_ARTIFACT_FILENAME))
+      },
       path: relativeToBackupRoot(directory)
     };
   }
@@ -518,6 +642,10 @@ function resultPathFor(selected: SelectedContent, runDir: string): string {
     return path.join(runDir, "pages", `${selected.objectId}.json`);
   }
   return path.join(runDir, "data-sources", selected.objectId);
+}
+
+function readObjectId(object: NotionObject): string | null {
+  return typeof object.id === "string" ? object.id : null;
 }
 
 function relativeToBackupRoot(filePath: string): string {

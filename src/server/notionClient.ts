@@ -161,6 +161,25 @@ export class NotionClient {
     });
   }
 
+  async listDataSourceViews(id: string, startCursor?: string): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }> {
+    return this.request({
+      method: "GET",
+      path: "views",
+      query: {
+        data_source_id: id,
+        page_size: 100,
+        ...(startCursor ? { start_cursor: startCursor } : {})
+      }
+    });
+  }
+
+  async retrieveView(id: string): Promise<NotionObject> {
+    return this.request({
+      method: "GET",
+      path: `views/${id}`
+    });
+  }
+
   async listBlockChildren(id: string, startCursor?: string): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }> {
     return this.request({
       method: "GET",

@@ -20,6 +20,7 @@ Restore/import is a best-effort workflow. It can recreate content into new Notio
 * Run logs: `logs.jsonl`.
 * Page artifact: `pages/<page-id>.json`.
 * Data source artifacts: `data-sources/<data-source-id>/schema.json` and `data-sources/<data-source-id>/entries.json`.
+* Data source view artifact: `data-sources/<data-source-id>/views.json`.
 * Markdown artifact: `markdown/<page-id>.md`.
 * Asset artifact: `assets/<page-id>/manifest.json` plus downloaded files.
 * Zip artifact: `archive.zip`, generated on demand from a run directory.
@@ -30,6 +31,7 @@ Restore/import is a best-effort workflow. It can recreate content into new Notio
 * `pages/<page-id>.json` is canonical and contains the page object, complete property item payloads where available, recursive block JSON, optional comments, and optional Markdown API response.
 * `data-sources/<data-source-id>/schema.json` stores the retrieved data source object and schema.
 * `data-sources/<data-source-id>/entries.json` stores queried data source entry pages; each entry page must also be backed up through the page artifact path.
+* `data-sources/<data-source-id>/views.json` stores the source data source ID, capture status, retrieved full view objects, and warnings for failed list/retrieve operations.
 * `markdown/<page-id>.md` is derived output for people and low-fidelity manual import only.
 * Notion-hosted files have temporary URLs. When the plan enables local file backup, download them during the run and record local paths plus skip/error reasons.
 * Item-level backup failures should be recorded without deleting already-written artifacts.
@@ -43,6 +45,7 @@ Restore/import is a best-effort workflow. It can recreate content into new Notio
 * Unsupported block/property type during restore -> skip or degrade explicitly; do not silently fabricate equivalent content.
 * Unresolved relation/mention/page reference -> defer to a mapping pass; if still unresolved, leave unset and record a warning.
 * Notion insert/read capability failure -> surface the required capability and stop the affected operation.
+* Data source view list/retrieve failure during backup -> write a `views.json` artifact with `failed` or `partial_failed` status plus warning details; do not silently claim all views were captured.
 
 ### 5. Good/Base/Bad Cases
 
@@ -54,6 +57,7 @@ Restore/import is a best-effort workflow. It can recreate content into new Notio
 
 * Artifact shape changes need unit or integration coverage asserting required files and key manifest fields.
 * Asset behavior changes need tests for downloaded, skipped, and external URL cases.
+* View artifact changes need tests for manifest capability gating, paginated view listing, full view retrieval, persisted warning artifacts, and failed list/retrieve cases.
 * Future restore code must test old-to-new ID mapping, missing artifact handling, unsupported block warnings, and partial restore reporting.
 * View-aware restore code must first add view artifacts to backup output, then test property-ID remapping and unsupported view warnings.
 * API route changes around artifact download or restore must pass `npm run lint`, `npm run build`, and targeted Vitest coverage.
@@ -77,6 +81,74 @@ const restoredPage = await createPageFromProperties(artifact.page, artifact.prop
 await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 ```
 
+## Scenario: Data Source View Artifact Backup
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to Notion Views API integration, data source backup artifacts, data source manifest capabilities, or future view-aware restore preflight.
+
+### 2. Signatures
+
+* Notion wrapper methods:
+  * `listDataSourceViews(dataSourceId, startCursor?)` -> paginated view references from `GET /views?data_source_id=...`.
+  * `retrieveView(viewId)` -> full view object from `GET /views/<view-id>`.
+* Artifact path: `runs/<run-key>/data-sources/<data-source-id>/views.json`.
+* Artifact shape: `{ dataSourceId, status, views, warnings }`.
+* Artifact status: `succeeded`, `partial_failed`, or `failed`.
+* Manifest capability/artifact kind: `data_source_views`.
+
+### 3. Contracts
+
+* Data source backups must write `views.json` alongside `schema.json` and `entries.json`.
+* `views` must contain full retrieved view objects, not only list references, because restore needs filters, sorts, quick filters, configuration, and property references.
+* View objects must preserve raw property IDs/names so a later restore pass can remap old property IDs to new property IDs.
+* A backup manifest may claim `data_source_views` only for plans that include selected data source backups that write view artifacts.
+* Page-only backup manifests must not claim `data_source_views`.
+* `restoreViews: true` remains unsupported until a later restore task implements property remapping and Notion view creation.
+
+### 4. Validation & Error Matrix
+
+* View list succeeds and all retrieve calls succeed -> `views.json.status = "succeeded"`.
+* View list fails -> write `views.json.status = "failed"`, keep `views = []`, add `data_source_views_list_failed`, and log `data_source_views_failed`.
+* One view retrieve fails -> write `views.json.status = "partial_failed"`, keep successfully retrieved views, add `data_source_view_retrieve_failed`, and log `data_source_view_failed`.
+* View reference has no string `id` -> skip that reference, add `data_source_view_reference_invalid`, and log the warning without dumping full view payloads.
+* Backup cancellation -> propagate cancellation instead of converting it to a view warning.
+
+### 5. Good/Base/Bad Cases
+
+* Good: data source backup writes schema, entries, entry page artifacts, and full raw view objects with old property references preserved.
+* Base: one view is inaccessible; backup keeps the other views and writes a partial warning artifact.
+* Bad: backup stores only list references, claims `data_source_views` for page-only plans, or accepts view restore before view creation/remapping exists.
+
+### 6. Tests Required
+
+* Manifest helper tests assert data source plans include `data_source_views` and page-only plans do not.
+* View artifact tests assert pagination, full view retrieval, raw property reference preservation, and `views.json` persistence.
+* Failure tests assert list/retrieve failures produce warning artifacts and structured run logs.
+* Existing restore validation tests must continue to reject `restoreViews: true`.
+* Full quality gate: `npm run lint`, `npm test`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// List references do not contain enough configuration for future restore.
+const views = await notion.listDataSourceViews(dataSourceId);
+await writeJson(`data-sources/${dataSourceId}/views.json`, views.results);
+```
+
+#### Correct
+
+```ts
+const references = await notion.listDataSourceViews(dataSourceId);
+const views = [];
+for (const reference of references.results) {
+  views.push(await notion.retrieveView(reference.id));
+}
+await writeJson(`data-sources/${dataSourceId}/views.json`, { dataSourceId, status: "succeeded", views, warnings: [] });
+```
+
 ## Design Decision: Restore Is Best-Effort Recreation
 
 **Context**: Notion's API supports creating pages, databases/data sources, block children, and file uploads, but created objects receive new IDs and API coverage does not include every workspace/UI detail.
@@ -88,7 +160,7 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Original page/block/data source IDs are preserved.
 * Original URLs, edit history, permissions, or comments history are restored.
 * Read-only/computed values such as formulas, rollups, created time, created by, last edited time, and last edited by can be written back exactly.
-* Views from current backup artifacts are restored. Current artifacts do not include Notion view objects; future view-aware backups may restore API-supported view configuration after those objects are backed up, but arbitrary UI state and unsupported view details are still not guaranteed.
+* That views are restored just because backup artifacts contain `views.json`. View-aware restore still needs explicit restore implementation, property ID remapping, warnings for unsupported view configuration, and API-supported view creation.
 
 **Related Research**:
 
@@ -400,7 +472,7 @@ app.post("/api/runs/:id/restore", async (request) => {
 ### 3. Contracts
 
 * New backup runs must write `schemaVersion`, `capabilities`, and `artifactKinds` to `manifest.json`.
-* Current backup runs must not claim `data_source_views` until view artifacts are actually backed up.
+* Backup runs with selected data sources may claim `data_source_views` only because `views.json` artifacts are written; page-only runs must not claim that capability.
 * Legacy manifests without `schemaVersion` must remain restorable for current page/data-source/file behavior and should produce a preflight compatibility warning.
 * Restore enqueue must store normalized restore options in `restore_runs.options_json`.
 * Restore execution must write selected restore options into the restore manifest/report.
@@ -423,7 +495,7 @@ app.post("/api/runs/:id/restore", async (request) => {
 
 ### 6. Tests Required
 
-* Manifest helper tests assert current schema metadata, legacy v1 defaulting, and that current runs do not claim `data_source_views`.
+* Manifest helper tests assert current schema metadata, legacy v1 defaulting, data source view capability gating, and page-only runs not claiming `data_source_views`.
 * Migration tests assert `options_json` and `summary_json` are additive, nullable, and preserve existing restore rows.
 * Validation tests assert omitted options default safely and unsupported future options are rejected.
 * Restore report compatibility tests assert missing options, mappings, and summary fields default safely.
@@ -484,7 +556,7 @@ const restoredViewId = report?.mappings.views[oldViewId];
 
 * Model-affecting restore work must be prioritized before implementation-only restore gaps to reduce later migration risk.
 * P0 model-first gaps:
-  * View-aware backup/restore. Current artifacts do not store views, so backup must capture view objects before restore can promise view recreation.
+  * View-aware restore. Backups with selected data sources can store view objects in `views.json`, but restore still needs property ID remapping, unsupported configuration handling, and explicit Notion view creation before it can promise view recreation.
   * Property/data-source/view ID mapping. View restore and relation repair need old-to-new mappings beyond page/block/data source/file IDs.
   * Restore options persistence. Options such as restoring comments, restoring views, importing external URLs, or relation strategy must be stored with the restore job and manifest for auditability.
   * Extensible restore metrics. Avoid adding a new SQLite column for every future count when a nullable JSON summary can preserve history without repeated migrations.
@@ -542,7 +614,7 @@ ALTER TABLE restore_runs ADD COLUMN summary_json TEXT;
 #### Wrong
 
 ```ts
-// Current backups do not contain view artifacts.
+// View restore must not infer views from schema when artifacts are missing.
 await restoreViewsFromDataSourceSchema(schema);
 ```
 

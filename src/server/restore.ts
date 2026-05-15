@@ -1,10 +1,12 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
+import { BACKUP_MANIFEST_CAPABILITY } from "../shared/constants.js";
 import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestoreOptions, RestorePreflight, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
 import type { DownloadResult } from "./assets.js";
 import { normalizeBackupManifest, readBackupManifestMetadata } from "./backupManifest.js";
+import { DATA_SOURCE_VIEWS_ARTIFACT_FILENAME, type DataSourceViewsArtifact } from "./backupWorker.js";
 import { badRequest, notFound } from "./errors.js";
 import { NotionApiError, NotionClient, type NotionObject } from "./notionClient.js";
 import { extractTitle } from "./repositories/notionRepository.js";
@@ -59,6 +61,17 @@ type RestoredFilePayload = {
 
 type FileUploadResolver = (file: NotionObject, warnings: RestoreWarning[]) => RestoredFilePayload | null;
 
+type ViewPropertyMappings = {
+  oldIdToNewId: Record<string, string>;
+  oldIdToName: Record<string, string>;
+  targetNameToId: Record<string, string>;
+};
+
+export type ViewRestoreConversion = {
+  request: NotionObject | null;
+  warnings: RestoreWarning[];
+};
+
 type RestoreContext = {
   notion: NotionClient;
   runDir: string;
@@ -90,6 +103,10 @@ const RESTORE_CHILD_CHUNK_SIZE = 100;
 const SINGLE_PART_FILE_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 const READ_ONLY_PAGE_PROPERTY_TYPES = new Set(["created_by", "created_time", "last_edited_by", "last_edited_time", "formula", "rollup", "unique_id", "verification"]);
 const UNSUPPORTED_SCHEMA_PROPERTY_TYPES = new Set(["relation", "rollup", "formula", "button", "location", "verification", "last_visited_time"]);
+const SUPPORTED_VIEW_TYPES = new Set(["table", "board", "list", "calendar", "timeline", "gallery", "form", "chart", "map"]);
+const VIEW_PROPERTY_REFERENCE_KEYS = new Set(["property", "property_id", "date_property_id", "end_date_property_id", "map_by", "x_axis_property_id", "y_axis_property_id", "toggle_column_id"]);
+const VIEW_RESPONSE_ONLY_KEYS = new Set(["id", "property_name", "date_property_name", "end_date_property_name", "dashboard_view_id"]);
+const SKIP_VIEW_VALUE = Symbol("skip_view_value");
 
 export async function restoreRunToNotion(input: { runId: string; targetParentId: string; token: string; options?: RestoreOptions }): Promise<RestoreReport> {
   return executeRestoreToNotion(input);
@@ -227,6 +244,12 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
       message: "备份 manifest 未包含 schemaVersion，按旧版 v1 artifact 兼容恢复；视图等新能力不会被假定可用"
     });
   }
+  if (options.restoreViews && !backupManifest.capabilities.includes(BACKUP_MANIFEST_CAPABILITY.DataSourceViews)) {
+    warnings.push({
+      code: "view_artifacts_missing",
+      message: "备份 manifest 未声明视图 artifact 能力；本次恢复会跳过视图"
+    });
+  }
   let pages = 0;
   let dataSources = 0;
   let restorableItems = 0;
@@ -267,6 +290,28 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
         message: `数据源 entries 备份文件不存在，恢复时会失败：${item.title}`,
         objectId: item.objectId
       });
+    }
+    if (options.restoreViews) {
+      const artifact = readDataSourceViewsArtifactSync(runDir, item.objectId);
+      if (!artifact) {
+        warnings.push({
+          code: "data_source_views_artifact_missing",
+          message: `数据源视图备份文件不存在，恢复时会跳过视图：${item.title}`,
+          objectId: item.objectId
+        });
+      } else if (artifact.status === "failed") {
+        warnings.push({
+          code: "data_source_views_artifact_failed",
+          message: `数据源视图备份读取失败，恢复时会跳过不可用视图：${item.title}`,
+          objectId: item.objectId
+        });
+      } else if (artifact.status === "partial_failed") {
+        warnings.push({
+          code: "data_source_views_artifact_partial",
+          message: `数据源视图备份不完整，恢复时只会创建已成功备份的视图：${item.title}`,
+          objectId: item.objectId
+        });
+      }
     }
   }
   warnings.push({
@@ -369,12 +414,24 @@ async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: 
     ...(icon ? { icon } : {}),
     ...(cover ? { cover } : {})
   });
+  const newDatabaseId = extractCreatedDatabaseId(created);
   const newDataSourceId = extractCreatedDataSourceId(created);
   if (!newDataSourceId) {
     throw new Error("Notion 未返回新数据源 ID");
   }
   context.report.mappings.dataSources[dataSourceId] = newDataSourceId;
   context.report.summary.createdDataSources += 1;
+  const oldDatabaseId = readParentDatabaseId(schema);
+  if (oldDatabaseId && newDatabaseId) {
+    context.report.mappings.databases[oldDatabaseId] = newDatabaseId;
+  }
+  const propertyMappings = context.report.options.restoreViews
+    ? await loadRestoredDataSourcePropertyMappings(context, {
+        sourceDataSourceId: dataSourceId,
+        targetDataSourceId: newDataSourceId,
+        sourceProperties: schema.properties
+      })
+    : emptyViewPropertyMappings();
 
   const parent: RestoreParent = {
     type: "data_source_id",
@@ -406,6 +463,15 @@ async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: 
         }
       });
     }
+  }
+
+  if (context.report.options.restoreViews) {
+    await restoreDataSourceViews(context, {
+      sourceDataSourceId: dataSourceId,
+      targetDataSourceId: newDataSourceId,
+      targetDatabaseId: newDatabaseId,
+      propertyMappings
+    });
   }
 
   return newDataSourceId;
@@ -862,6 +928,419 @@ async function readDataSourceEntries(runDir: string, dataSourceId: string): Prom
   return entries.filter((entry): entry is NotionObject => Boolean(entry && typeof entry === "object"));
 }
 
+async function readDataSourceViewsArtifact(runDir: string, dataSourceId: string): Promise<DataSourceViewsArtifact | null> {
+  const filePath = dataSourceViewsArtifactPath(runDir, dataSourceId);
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  const artifact = await readJson<unknown>(filePath).catch(() => null);
+  return normalizeDataSourceViewsArtifact(artifact, dataSourceId);
+}
+
+function readDataSourceViewsArtifactSync(runDir: string, dataSourceId: string): DataSourceViewsArtifact | null {
+  const filePath = dataSourceViewsArtifactPath(runDir, dataSourceId);
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return normalizeDataSourceViewsArtifact(JSON.parse(readFileSync(filePath, "utf8")), dataSourceId);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeDataSourceViewsArtifact(value: unknown, dataSourceId: string): DataSourceViewsArtifact | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const status = value.status;
+  if (status !== "succeeded" && status !== "partial_failed" && status !== "failed") {
+    return null;
+  }
+  const views = Array.isArray(value.views) ? value.views.filter((view): view is NotionObject => isRecord(view)) : [];
+  const warnings = Array.isArray(value.warnings)
+    ? value.warnings.flatMap((warning) => {
+        if (!isRecord(warning) || typeof warning.code !== "string" || typeof warning.message !== "string") {
+          return [];
+        }
+        return [
+          {
+            code: warning.code,
+            message: warning.message,
+            ...(typeof warning.viewId === "string" ? { viewId: warning.viewId } : {}),
+            ...(isRecord(warning.details) ? { details: warning.details as Record<string, unknown> } : {})
+          }
+        ];
+      })
+    : [];
+  return {
+    dataSourceId: typeof value.dataSourceId === "string" ? value.dataSourceId : dataSourceId,
+    status,
+    views,
+    warnings
+  };
+}
+
+function dataSourceViewsArtifactPath(runDir: string, dataSourceId: string): string {
+  return path.join(dataSourceArtifactPath(runDir, dataSourceId), DATA_SOURCE_VIEWS_ARTIFACT_FILENAME);
+}
+
+async function loadRestoredDataSourcePropertyMappings(
+  context: RestoreContext,
+  input: { sourceDataSourceId: string; targetDataSourceId: string; sourceProperties: unknown }
+): Promise<ViewPropertyMappings> {
+  try {
+    const targetDataSource = await context.notion.retrieveDataSource(input.targetDataSourceId);
+    const mappings = buildViewPropertyMappings(input.sourceProperties, targetDataSource.properties);
+    for (const [oldPropertyId, newPropertyId] of Object.entries(mappings.oldIdToNewId)) {
+      context.report.mappings.properties[oldPropertyId] = newPropertyId;
+    }
+    return mappings;
+  } catch (error) {
+    addWarning(context.report, {
+      code: "data_source_property_mapping_failed",
+      message: `无法读取恢复后的数据源属性 ID，视图恢复会降级：${errorMessage(error)}`,
+      objectId: input.sourceDataSourceId
+    });
+    return emptyViewPropertyMappings();
+  }
+}
+
+function buildViewPropertyMappings(sourceProperties: unknown, targetProperties: unknown): ViewPropertyMappings {
+  const mappings = emptyViewPropertyMappings();
+  if (!isRecord(sourceProperties) || !isRecord(targetProperties)) {
+    return mappings;
+  }
+  for (const [propertyName, rawSourceProperty] of Object.entries(sourceProperties)) {
+    if (!isRecord(rawSourceProperty)) {
+      continue;
+    }
+    const sourcePropertyId = readPropertyId(rawSourceProperty);
+    if (sourcePropertyId) {
+      mappings.oldIdToName[sourcePropertyId] = propertyName;
+    }
+    const rawTargetProperty = targetProperties[propertyName];
+    if (!isRecord(rawTargetProperty)) {
+      continue;
+    }
+    const targetPropertyId = readPropertyId(rawTargetProperty);
+    if (targetPropertyId) {
+      mappings.targetNameToId[propertyName] = targetPropertyId;
+    }
+    if (sourcePropertyId && targetPropertyId) {
+      mappings.oldIdToNewId[sourcePropertyId] = targetPropertyId;
+    }
+  }
+  return mappings;
+}
+
+function emptyViewPropertyMappings(): ViewPropertyMappings {
+  return {
+    oldIdToNewId: {},
+    oldIdToName: {},
+    targetNameToId: {}
+  };
+}
+
+async function restoreDataSourceViews(
+  context: RestoreContext,
+  input: { sourceDataSourceId: string; targetDataSourceId: string; targetDatabaseId: string | null; propertyMappings: ViewPropertyMappings }
+): Promise<void> {
+  assertRestoreNotCanceled(context);
+  if (!input.targetDatabaseId) {
+    addWarning(context.report, {
+      code: "view_restore_database_missing",
+      message: "Notion 未返回新 database ID，已跳过视图恢复",
+      objectId: input.sourceDataSourceId
+    });
+    return;
+  }
+
+  const backupManifestPath = path.join(context.runDir, "manifest.json");
+  const backupManifest = existsSync(backupManifestPath) ? readBackupManifestMetadata(backupManifestPath) : normalizeBackupManifest({});
+  if (!backupManifest.capabilities.includes(BACKUP_MANIFEST_CAPABILITY.DataSourceViews)) {
+    addWarning(context.report, {
+      code: "view_artifacts_missing",
+      message: "备份 manifest 未声明视图 artifact 能力，已跳过视图恢复",
+      objectId: input.sourceDataSourceId
+    });
+    return;
+  }
+
+  const artifact = await readDataSourceViewsArtifact(context.runDir, input.sourceDataSourceId);
+  if (!artifact) {
+    addWarning(context.report, {
+      code: "data_source_views_artifact_missing",
+      message: "数据源视图备份文件不存在或格式无效，已跳过视图恢复",
+      objectId: input.sourceDataSourceId
+    });
+    return;
+  }
+  if (artifact.status === "failed") {
+    addWarning(context.report, {
+      code: "data_source_views_artifact_failed",
+      message: "数据源视图备份读取失败；只会尝试恢复 artifact 中已存在的视图",
+      objectId: input.sourceDataSourceId
+    });
+  } else if (artifact.status === "partial_failed") {
+    addWarning(context.report, {
+      code: "data_source_views_artifact_partial",
+      message: "数据源视图备份不完整；只会尝试恢复已成功备份的视图",
+      objectId: input.sourceDataSourceId
+    });
+  }
+
+  for (const view of artifact.views) {
+    assertRestoreNotCanceled(context);
+    const oldViewId = readNotionObjectId(view);
+    const conversion = convertDataSourceViewForRestore(view, {
+      targetDatabaseId: input.targetDatabaseId,
+      targetDataSourceId: input.targetDataSourceId,
+      propertyMappings: input.propertyMappings,
+      objectMappings: context.report.mappings.pages
+    });
+    for (const warning of conversion.warnings) {
+      addWarning(context.report, {
+        ...warning,
+        objectId: warning.objectId || input.sourceDataSourceId
+      });
+    }
+    if (!conversion.request) {
+      continue;
+    }
+    try {
+      const created = await context.notion.createView(conversion.request);
+      const newViewId = readNotionObjectId(created);
+      if (oldViewId && newViewId) {
+        context.report.mappings.views[oldViewId] = newViewId;
+      }
+      if (newViewId) {
+        context.report.summary.createdViews = (context.report.summary.createdViews ?? 0) + 1;
+      } else {
+        addWarning(context.report, {
+          code: "view_mapping_missing",
+          message: "Notion 未返回新视图 ID，无法记录视图映射",
+          objectId: input.sourceDataSourceId,
+          details: oldViewId ? { viewId: oldViewId } : undefined
+        });
+      }
+    } catch (error) {
+      addWarning(context.report, {
+        code: "view_restore_failed",
+        message: `视图恢复失败：${viewName(view)}：${errorMessage(error)}`,
+        objectId: input.sourceDataSourceId,
+        details: oldViewId ? { viewId: oldViewId } : undefined
+      });
+    }
+  }
+}
+
+export function convertDataSourceViewForRestore(
+  view: NotionObject,
+  input: { targetDatabaseId: string; targetDataSourceId: string; propertyMappings?: Partial<ViewPropertyMappings>; objectMappings?: Record<string, string> }
+): ViewRestoreConversion {
+  const warnings: RestoreWarning[] = [];
+  const mappings = normalizeViewPropertyMappings(input.propertyMappings);
+  const type = typeof view.type === "string" ? view.type : "";
+  const oldViewId = readNotionObjectId(view);
+  if (!SUPPORTED_VIEW_TYPES.has(type)) {
+    warnings.push({
+      code: "view_type_unsupported",
+      message: `暂不支持恢复 ${type || "unknown"} 视图，已跳过`,
+      details: oldViewId ? { viewId: oldViewId } : undefined
+    });
+    return { request: null, warnings };
+  }
+
+  const request: NotionObject = {
+    data_source_id: input.targetDataSourceId,
+    database_id: input.targetDatabaseId,
+    name: viewName(view),
+    type
+  };
+
+  const filter = remapViewOptionalObject(view.filter, mappings, input.objectMappings ?? {}, warnings, oldViewId);
+  if (filter) {
+    request.filter = filter;
+  }
+  const sorts = convertViewSorts(view.sorts, mappings, input.objectMappings ?? {}, warnings, oldViewId);
+  if (sorts.length > 0) {
+    request.sorts = sorts;
+  }
+  const quickFilters = remapViewOptionalObject(view.quick_filters, mappings, input.objectMappings ?? {}, warnings, oldViewId);
+  if (quickFilters) {
+    request.quick_filters = quickFilters;
+  }
+  const configuration = convertViewConfiguration(view.configuration, type, mappings, input.objectMappings ?? {}, warnings, oldViewId);
+  if (configuration) {
+    request.configuration = configuration;
+  }
+
+  return { request, warnings };
+}
+
+function normalizeViewPropertyMappings(mappings: Partial<ViewPropertyMappings> | undefined): ViewPropertyMappings {
+  return {
+    oldIdToNewId: mappings?.oldIdToNewId ?? {},
+    oldIdToName: mappings?.oldIdToName ?? {},
+    targetNameToId: mappings?.targetNameToId ?? {}
+  };
+}
+
+function remapViewOptionalObject(
+  value: unknown,
+  mappings: ViewPropertyMappings,
+  objectMappings: Record<string, string>,
+  warnings: RestoreWarning[],
+  viewId: string | null
+): NotionObject | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const remapped = remapViewValue(value, mappings, objectMappings, warnings, viewId);
+  return isRecord(remapped) ? remapped : null;
+}
+
+function convertViewSorts(
+  value: unknown,
+  mappings: ViewPropertyMappings,
+  objectMappings: Record<string, string>,
+  warnings: RestoreWarning[],
+  viewId: string | null
+): NotionObject[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const sorts: NotionObject[] = [];
+  for (const rawSort of value) {
+    if (!isRecord(rawSort) || typeof rawSort.direction !== "string") {
+      continue;
+    }
+    if (typeof rawSort.timestamp === "string") {
+      sorts.push({
+        timestamp: rawSort.timestamp,
+        direction: rawSort.direction
+      });
+      continue;
+    }
+    if (typeof rawSort.property === "string") {
+      const property = remapPropertyReference(rawSort.property, mappings);
+      if (!property) {
+        addViewConversionWarning(warnings, "view_property_mapping_missing", "视图排序引用的属性无法映射，已跳过该排序", viewId, {
+          property: rawSort.property
+        });
+        continue;
+      }
+      sorts.push({
+        property,
+        direction: rawSort.direction
+      });
+      continue;
+    }
+    const remapped = remapViewValue(rawSort, mappings, objectMappings, warnings, viewId);
+    if (isRecord(remapped)) {
+      sorts.push(remapped);
+    }
+  }
+  return sorts;
+}
+
+function convertViewConfiguration(
+  value: unknown,
+  viewType: string,
+  mappings: ViewPropertyMappings,
+  objectMappings: Record<string, string>,
+  warnings: RestoreWarning[],
+  viewId: string | null
+): NotionObject | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const remapped = remapViewValue(value, mappings, objectMappings, warnings, viewId);
+  if (!isRecord(remapped)) {
+    addViewConversionWarning(warnings, "view_configuration_skipped", "视图配置中的属性无法映射，已使用默认配置创建视图", viewId);
+    return null;
+  }
+  remapped.type = viewType;
+  if (viewType === "board" && !isRecord(remapped.group_by)) {
+    addViewConversionWarning(warnings, "view_configuration_skipped", "看板视图分组属性无法映射，已使用默认配置创建视图", viewId);
+    return null;
+  }
+  if ((viewType === "calendar" || viewType === "timeline") && typeof remapped.date_property_id !== "string") {
+    addViewConversionWarning(warnings, "view_configuration_skipped", "日历/时间线视图日期属性无法映射，已使用默认配置创建视图", viewId);
+    return null;
+  }
+  if (viewType === "chart" && typeof remapped.chart_type !== "string") {
+    addViewConversionWarning(warnings, "view_configuration_skipped", "图表视图配置不完整，已使用默认配置创建视图", viewId);
+    return null;
+  }
+  return remapped;
+}
+
+function remapViewValue(
+  value: unknown,
+  mappings: ViewPropertyMappings,
+  objectMappings: Record<string, string>,
+  warnings: RestoreWarning[],
+  viewId: string | null
+): unknown | typeof SKIP_VIEW_VALUE {
+  if (typeof value === "string") {
+    return objectMappings[value] ?? value;
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      const remapped = remapViewValue(item, mappings, objectMappings, warnings, viewId);
+      return remapped === SKIP_VIEW_VALUE ? [] : [remapped];
+    });
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const output: NotionObject = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (VIEW_RESPONSE_ONLY_KEYS.has(key)) {
+      continue;
+    }
+    if (VIEW_PROPERTY_REFERENCE_KEYS.has(key) && typeof rawValue === "string") {
+      const mapped = remapPropertyReference(rawValue, mappings);
+      if (!mapped) {
+        addViewConversionWarning(warnings, "view_property_mapping_missing", "视图配置引用的属性无法映射，相关配置已跳过", viewId, {
+          field: key,
+          property: rawValue
+        });
+        return SKIP_VIEW_VALUE;
+      }
+      output[key] = mapped;
+      continue;
+    }
+    const remapped = remapViewValue(rawValue, mappings, objectMappings, warnings, viewId);
+    if (remapped !== SKIP_VIEW_VALUE) {
+      output[key] = remapped;
+    }
+  }
+  return output;
+}
+
+function remapPropertyReference(reference: string, mappings: ViewPropertyMappings): string | null {
+  return (
+    mappings.oldIdToNewId[reference] ??
+    (mappings.oldIdToName[reference] ? mappings.targetNameToId[mappings.oldIdToName[reference]] : undefined) ??
+    mappings.targetNameToId[reference] ??
+    null
+  );
+}
+
+function addViewConversionWarning(warnings: RestoreWarning[], code: string, message: string, viewId: string | null, details: Record<string, unknown> = {}): void {
+  warnings.push({
+    code,
+    message,
+    details: {
+      ...details,
+      ...(viewId ? { viewId } : {})
+    }
+  });
+}
+
 async function prepareFileUploadResolver(context: RestoreContext, pageId: string, fileObjects: NotionObject[]): Promise<FileUploadResolver | undefined> {
   const uploadResults = new Map<string, { payload?: RestoredFilePayload; warning?: RestoreWarning }>();
   for (const fileObject of fileObjects) {
@@ -1055,6 +1534,29 @@ function dataSourceArtifactPath(runDir: string, dataSourceId: string): string {
   return path.join(runDir, "data-sources", dataSourceId);
 }
 
+function readNotionObjectId(value: unknown): string | null {
+  return isRecord(value) && typeof value.id === "string" ? value.id : null;
+}
+
+function readPropertyId(value: unknown): string | null {
+  return isRecord(value) && typeof value.id === "string" ? value.id : null;
+}
+
+function readParentDatabaseId(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.parent)) {
+    return null;
+  }
+  return value.parent.type === "database_id" && typeof value.parent.database_id === "string" ? value.parent.database_id : null;
+}
+
+function viewName(view: NotionObject): string {
+  return typeof view.name === "string" && view.name.trim() ? view.name : "恢复视图";
+}
+
+function isRecord(value: unknown): value is NotionObject {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function isDownloadResult(value: unknown): value is DownloadResult {
   if (!value || typeof value !== "object") {
     return false;
@@ -1199,6 +1701,10 @@ function extractCreatedDataSourceId(response: NotionObject): string | null {
     return (initialDataSource as { id: string }).id;
   }
   return null;
+}
+
+function extractCreatedDatabaseId(response: NotionObject): string | null {
+  return response.object === "database" && typeof response.id === "string" ? response.id : null;
 }
 
 function addSkippedItem(report: RestoreReport, item: BackupRunItem, message: string): { warnings: RestoreWarning[] } {

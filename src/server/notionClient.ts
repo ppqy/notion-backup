@@ -180,6 +180,14 @@ export class NotionClient {
     });
   }
 
+  async createView(body: unknown): Promise<NotionObject> {
+    return this.request({
+      method: "POST",
+      path: "views",
+      body
+    });
+  }
+
   async listBlockChildren(id: string, startCursor?: string): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }> {
     return this.request({
       method: "GET",

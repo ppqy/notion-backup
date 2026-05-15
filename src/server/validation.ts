@@ -46,13 +46,6 @@ export const restoreOptionsSchema = z
         message: "暂不支持恢复评论"
       });
     }
-    if (options.restoreViews) {
-      context.addIssue({
-        code: "custom",
-        path: ["restoreViews"],
-        message: "暂不支持恢复视图"
-      });
-    }
     if (options.importExternalUrls) {
       context.addIssue({
         code: "custom",

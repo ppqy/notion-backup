@@ -8,6 +8,7 @@ import type {
   NotionConnectionStatus,
   PageResult,
   RestorePreflight,
+  RestoreOptions,
   RestoreReport,
   RestoreRunDetail,
   RestoreRunSummary,
@@ -62,8 +63,10 @@ export const endpoints = {
   runs: (params: URLSearchParams) => api<PageResult<BackupRunSummary>>(`/api/runs?${params}`),
   runDetail: (id: string) => api<BackupRunDetail>(`/api/runs/${id}`),
   latestRestore: (id: string) => api<{ report: RestoreReport | null }>(`/api/runs/${id}/restore/latest`),
-  preflightRestore: (id: string, targetParent: string) => api<RestorePreflight>(`/api/runs/${id}/restore/preflight`, { method: "POST", body: { targetParent } }),
-  restoreRun: (id: string, targetParent: string) => api<RestoreRunDetail>(`/api/runs/${id}/restore`, { method: "POST", body: { targetParent } }),
+  preflightRestore: (id: string, targetParent: string, options?: Partial<RestoreOptions>) =>
+    api<RestorePreflight>(`/api/runs/${id}/restore/preflight`, { method: "POST", body: { targetParent, options } }),
+  restoreRun: (id: string, targetParent: string, options?: Partial<RestoreOptions>) =>
+    api<RestoreRunDetail>(`/api/runs/${id}/restore`, { method: "POST", body: { targetParent, options } }),
   restores: (params: URLSearchParams) => api<PageResult<RestoreRunSummary>>(`/api/restores?${params}`),
   restoreDetail: (id: string) => api<RestoreRunDetail>(`/api/restores/${id}`),
   cancelRestore: (id: string) => api<RestoreRunSummary>(`/api/restores/${id}/cancel`, { method: "POST" }),

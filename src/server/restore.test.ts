@@ -1,12 +1,15 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { BACKUP_MANIFEST_CAPABILITY } from "../shared/constants.js";
+import { DEFAULT_RESTORE_OPTIONS } from "../shared/constants.js";
 import type { BackupRunDetail, BackupRunItem } from "../shared/types.js";
 import {
   collectPageArtifactRestoreWarnings,
   convertBlockForRestore,
   convertDataSourcePropertiesForRestore,
+  convertDataSourceViewForRestore,
   convertPagePropertiesForRestore,
   resolveRestoreStatus,
   safeUploadFileName,
@@ -330,6 +333,121 @@ describe("restore data source schema conversion", () => {
   });
 });
 
+describe("restore data source view conversion", () => {
+  it("builds create-view payloads with remapped property IDs", () => {
+    const conversion = convertDataSourceViewForRestore(
+      {
+        object: "view",
+        id: "old-view",
+        name: "Open tasks",
+        type: "table",
+        filter: {
+          property: "old-status",
+          status: { equals: "Open" }
+        },
+        sorts: [{ property: "Name", direction: "ascending" }],
+        configuration: {
+          type: "table",
+          properties: [
+            {
+              id: "view-property-config",
+              property_id: "old-status",
+              property_name: "Status",
+              visible: true,
+              width: 120
+            }
+          ]
+        }
+      },
+      {
+        targetDatabaseId: "new-database",
+        targetDataSourceId: "new-data-source",
+        propertyMappings: {
+          oldIdToNewId: { "old-status": "new-status", "old-name": "new-name" },
+          oldIdToName: { "old-status": "Status", "old-name": "Name" },
+          targetNameToId: { Status: "new-status", Name: "new-name" }
+        }
+      }
+    );
+
+    expect(conversion.warnings).toEqual([]);
+    expect(conversion.request).toEqual({
+      data_source_id: "new-data-source",
+      database_id: "new-database",
+      name: "Open tasks",
+      type: "table",
+      filter: {
+        property: "new-status",
+        status: { equals: "Open" }
+      },
+      sorts: [{ property: "new-name", direction: "ascending" }],
+      configuration: {
+        type: "table",
+        properties: [
+          {
+            property_id: "new-status",
+            visible: true,
+            width: 120
+          }
+        ]
+      }
+    });
+  });
+
+  it("warns and falls back when view configuration property IDs cannot be mapped", () => {
+    const conversion = convertDataSourceViewForRestore(
+      {
+        id: "old-board",
+        name: "Board",
+        type: "board",
+        configuration: {
+          type: "board",
+          group_by: {
+            type: "status",
+            property_id: "missing-property",
+            group_by: "option",
+            sort: { type: "manual" }
+          }
+        }
+      },
+      {
+        targetDatabaseId: "new-database",
+        targetDataSourceId: "new-data-source",
+        propertyMappings: {
+          oldIdToNewId: {},
+          oldIdToName: {},
+          targetNameToId: {}
+        }
+      }
+    );
+
+    expect(conversion.request).toMatchObject({
+      data_source_id: "new-data-source",
+      database_id: "new-database",
+      name: "Board",
+      type: "board"
+    });
+    expect(conversion.request).not.toHaveProperty("configuration");
+    expect(conversion.warnings.map((warning) => warning.code)).toEqual(["view_property_mapping_missing", "view_configuration_skipped"]);
+  });
+
+  it("skips unsupported dashboard views", () => {
+    const conversion = convertDataSourceViewForRestore(
+      {
+        id: "dashboard-view",
+        type: "dashboard"
+      },
+      {
+        targetDatabaseId: "new-database",
+        targetDataSourceId: "new-data-source"
+      }
+    );
+
+    expect(conversion.request).toBeNull();
+    expect(conversion.warnings[0]?.code).toBe("view_type_unsupported");
+  });
+});
+
 describe("restore page property conversion", () => {
   it("restores writable property values with response-only fields removed", () => {
     const conversion = convertPagePropertiesForRestore({
@@ -548,6 +666,63 @@ describe("restore preflight", () => {
     expect(summary.warnings.map((warning) => warning.code)).toContain("data_source_schema_missing");
     expect(summary.warnings.map((warning) => warning.code)).toContain("restore_item_skipped");
     expect(summary.warnings.map((warning) => warning.code)).toContain("restore_creates_new_content");
+  });
+
+  it("warns about requested view restore support and view artifact state", async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), "restore-view-summary-"));
+    await writeFile(
+      path.join(runDir, "manifest.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        capabilities: [BACKUP_MANIFEST_CAPABILITY.DataSourceViews],
+        artifactKinds: ["data_source_views"]
+      }),
+      "utf8"
+    );
+    const dataSourceItem: BackupRunItem = {
+      ...successfulItem(),
+      id: "item-2",
+      objectId: "data-source-1",
+      objectType: "data_source",
+      title: "Data source"
+    };
+
+    const missingSummary = summarizeRestorePreflight(
+      {
+        id: "run-1",
+        runKey: "run-key",
+        artifactDir: runDir,
+        items: [dataSourceItem]
+      },
+      "target-parent",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreViews: true }
+    );
+    expect(missingSummary.warnings.map((warning) => warning.code)).toContain("data_source_views_artifact_missing");
+
+    const dataSourceDir = path.join(runDir, "data-sources", "data-source-1");
+    await mkdir(dataSourceDir, { recursive: true });
+    await writeFile(
+      path.join(dataSourceDir, "views.json"),
+      JSON.stringify({
+        dataSourceId: "data-source-1",
+        status: "partial_failed",
+        views: [{ id: "view-1", type: "table", name: "Table" }],
+        warnings: []
+      }),
+      "utf8"
+    );
+
+    const partialSummary = summarizeRestorePreflight(
+      {
+        id: "run-1",
+        runKey: "run-key",
+        artifactDir: runDir,
+        items: [dataSourceItem]
+      },
+      "target-parent",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreViews: true }
+    );
+    expect(partialSummary.warnings.map((warning) => warning.code)).toContain("data_source_views_artifact_partial");
   });
 });
 

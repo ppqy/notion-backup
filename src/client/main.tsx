@@ -959,6 +959,7 @@ function RestoreRunRow({
 }
 
 function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: RestoreRunDetail; onClose: () => void; onChanged: () => Promise<void> }) {
+  const createdViews = detail.summaryMetrics?.createdViews ?? detail.report?.summary.createdViews ?? 0;
   return (
     <div className="drawer" onClick={onClose}>
       <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
@@ -977,6 +978,7 @@ function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: Restor
           <Metric label="新建页面" value={String(detail.createdPages)} />
           <Metric label="新建数据源" value={String(detail.createdDataSources)} />
           <Metric label="新建区块" value={String(detail.createdBlocks)} />
+          <Metric label="新建视图" value={String(createdViews)} />
           <Metric label="警告" value={String(detail.warningCount)} />
           <Metric label="失败" value={String(detail.failedItems)} />
         </div>
@@ -1063,6 +1065,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
 
 function RestorePanel({ detail }: { detail: BackupRunDetail }) {
   const [targetParent, setTargetParent] = useState("");
+  const [restoreViews, setRestoreViews] = useState(false);
   const [report, setReport] = useState<RestoreReport | null>(null);
   const [preflight, setPreflight] = useState<RestorePreflight | null>(null);
   const [restoreRun, setRestoreRun] = useState<RestoreRunDetail | null>(null);
@@ -1090,7 +1093,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     }
     setBusy(true);
     try {
-      setPreflight(await endpoints.preflightRestore(detail.id, targetParent.trim()));
+      setPreflight(await endpoints.preflightRestore(detail.id, targetParent.trim(), restoreViews ? { restoreViews: true } : undefined));
       setMessage("预检完成，确认后会创建恢复任务");
     } catch (error) {
       setMessage(errorText(error));
@@ -1110,7 +1113,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     setBusy(true);
     setMessage("");
     try {
-      const queued = await endpoints.restoreRun(detail.id, targetParent.trim());
+      const queued = await endpoints.restoreRun(detail.id, targetParent.trim(), restoreViews ? { restoreViews: true } : undefined);
       setRestoreRun(queued);
       setTargetParent("");
       setPreflight(null);
@@ -1128,9 +1131,22 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
         <h2>恢复到 Notion</h2>
         {report ? <span className="muted">最近恢复：{formatDate(report.startedAt)}</span> : null}
       </div>
-      <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、视图、未下载或过大的文件和无法映射的关系会记录为警告。</p>
+      <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、未下载或过大的文件和无法映射的关系会记录为警告。</p>
       <form className="inline-form" onSubmit={submitPreflight}>
         <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
+        <label className="check-line restore-option">
+          <input
+            type="checkbox"
+            checked={restoreViews}
+            onChange={(event) => {
+              setRestoreViews(event.target.checked);
+              setPreflight(null);
+              setRestoreRun(null);
+            }}
+            disabled={!canRestore || busy}
+          />
+          恢复视图
+        </label>
         <button className="primary" type="submit" disabled={!canRestore || busy}>
           {busy ? <Loader2 className="spin" /> : <Search />}
           预检
@@ -1159,6 +1175,7 @@ function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight })
         <Metric label="可恢复" value={String(preflight.restorableItems)} />
         <Metric label="页面" value={String(preflight.pages)} />
         <Metric label="数据源" value={String(preflight.dataSources)} />
+        <Metric label="视图" value={preflight.options.restoreViews ? "恢复" : "跳过"} />
         <Metric label="将跳过" value={String(preflight.skippedItems)} />
       </div>
       <p className="muted">目标父页面：{preflight.targetParentId}</p>
@@ -1187,6 +1204,7 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
         <Metric label="新建页面" value={String(report.summary.createdPages)} />
         <Metric label="新建数据源" value={String(report.summary.createdDataSources ?? 0)} />
         <Metric label="新建区块" value={String(report.summary.createdBlocks)} />
+        <Metric label="新建视图" value={String(report.summary.createdViews ?? 0)} />
         <Metric label="警告" value={String(report.summary.warningCount)} />
         <Metric label="失败" value={String(report.summary.failedItems)} />
       </div>

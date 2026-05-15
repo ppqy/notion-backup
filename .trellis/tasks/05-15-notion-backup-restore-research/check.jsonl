@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for review"}
+{"file": ".trellis/spec/backend/backup-artifacts-and-restore.md", "reason": "Check JSON artifact and restore boundary contract"}
+{"file": ".trellis/tasks/05-15-notion-backup-restore-research/research/notion-json-backup-and-restore.md", "reason": "Verify recorded restore/import research"}

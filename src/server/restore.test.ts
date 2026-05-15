@@ -9,6 +9,7 @@ import {
   convertDataSourcePropertiesForRestore,
   convertPagePropertiesForRestore,
   resolveRestoreStatus,
+  summarizeRestorePreflight,
   validateRestorePreflight
 } from "./restore.js";
 
@@ -389,6 +390,51 @@ describe("restore preflight", () => {
       "没有可恢复的成功备份项目"
     );
     await expect(validateRestorePreflight(fakeRun({ artifactDir: runDir }))).resolves.toBeUndefined();
+  });
+
+  it("summarizes restorable items and artifact warnings without writing to Notion", async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), "restore-summary-"));
+    await writeFile(path.join(runDir, "manifest.json"), "{}\n", "utf8");
+    const summary = summarizeRestorePreflight(
+      {
+        id: "run-1",
+        runKey: "run-key",
+        artifactDir: runDir,
+        items: [
+          successfulItem(),
+          {
+            ...successfulItem(),
+            id: "item-2",
+            objectId: "data-source-1",
+            objectType: "data_source",
+            title: "Data source"
+          },
+          {
+            ...successfulItem(),
+            id: "item-3",
+            objectId: "failed-page",
+            title: "Failed page",
+            status: "failed"
+          }
+        ]
+      },
+      "target-parent"
+    );
+
+    expect(summary).toMatchObject({
+      sourceRunId: "run-1",
+      sourceRunKey: "run-key",
+      targetParentId: "target-parent",
+      totalItems: 3,
+      restorableItems: 2,
+      skippedItems: 1,
+      pages: 1,
+      dataSources: 1
+    });
+    expect(summary.warnings.map((warning) => warning.code)).toContain("page_artifact_missing");
+    expect(summary.warnings.map((warning) => warning.code)).toContain("data_source_schema_missing");
+    expect(summary.warnings.map((warning) => warning.code)).toContain("restore_item_skipped");
+    expect(summary.warnings.map((warning) => warning.code)).toContain("restore_creates_new_content");
   });
 });
 

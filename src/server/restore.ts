@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
+import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestorePreflight, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
 import { badRequest, notFound } from "./errors.js";
 import { NotionApiError, NotionClient, type NotionObject } from "./notionClient.js";
 import { extractTitle } from "./repositories/notionRepository.js";
@@ -52,7 +52,24 @@ type RestoreContext = {
   runDir: string;
   report: RestoreReport;
   restoringPages: Set<string>;
+  shouldCancel?: () => boolean;
+  onProgress?: (report: RestoreReport) => void | Promise<void>;
 };
+
+export type RestoreExecutionHooks = {
+  restoreId?: string;
+  shouldCancel?: () => boolean;
+  onPhase?: (phase: string, currentItemTitle?: string | null) => void | Promise<void>;
+  onItemStart?: (item: BackupRunItem) => void | Promise<void>;
+  onItemFinish?: (item: BackupRunItem, result: { status: "succeeded" | "failed" | "skipped"; newPageId?: string; newDataSourceId?: string; warningCount: number; error?: string }) => void | Promise<void>;
+  onProgress?: (report: RestoreReport) => void | Promise<void>;
+};
+
+export class RestoreCanceledError extends Error {
+  constructor() {
+    super("恢复已取消");
+  }
+}
 
 const RESTORE_LATEST_FILE = "restore-latest.json";
 const RESTORE_CHILD_CHUNK_SIZE = 100;
@@ -60,6 +77,10 @@ const READ_ONLY_PAGE_PROPERTY_TYPES = new Set(["created_by", "created_time", "la
 const UNSUPPORTED_SCHEMA_PROPERTY_TYPES = new Set(["relation", "rollup", "formula", "button", "location", "verification", "last_visited_time"]);
 
 export async function restoreRunToNotion(input: { runId: string; targetParentId: string; token: string }): Promise<RestoreReport> {
+  return executeRestoreToNotion(input);
+}
+
+export async function executeRestoreToNotion(input: { runId: string; targetParentId: string; token: string; hooks?: RestoreExecutionHooks }): Promise<RestoreReport> {
   const run = getRun(input.runId);
   await validateRestorePreflight(run);
   const runDir = run.artifactDir;
@@ -68,72 +89,176 @@ export async function restoreRunToNotion(input: { runId: string; targetParentId:
   }
 
   const notion = new NotionClient(input.token);
-  try {
-    await notion.retrievePage(input.targetParentId);
-  } catch (error) {
-    if (error instanceof NotionApiError && [401, 403, 404].includes(error.status)) {
-      throw badRequest("目标父页面不可访问，请确认页面已分享给当前 Notion 集成");
-    }
-    throw error;
-  }
+  await validateRestoreTarget(notion, input.targetParentId);
 
-  const restoreId = `${nowIso().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z")}_${nanoid(6)}`;
+  const restoreId = input.hooks?.restoreId ?? `${nowIso().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z")}_${nanoid(6)}`;
   const report = createInitialReport(restoreId, run.id, run.runKey, input.targetParentId);
   const context: RestoreContext = {
     notion,
     runDir,
     report,
-    restoringPages: new Set()
+    restoringPages: new Set(),
+    shouldCancel: input.hooks?.shouldCancel,
+    onProgress: input.hooks?.onProgress
   };
 
-  for (const item of run.items) {
-    if (item.status !== "succeeded") {
-      addSkippedItem(report, item, "只恢复状态为成功的备份项目");
-      continue;
-    }
-    const itemWarningsStart = report.warnings.length;
-    try {
-      if (item.objectType === "data_source") {
-        const newDataSourceId = await restoreDataSourceArtifact(context, item.objectId, input.targetParentId, item.title);
+  try {
+    await input.hooks?.onPhase?.("恢复中", null);
+    for (const item of run.items) {
+      assertRestoreNotCanceled(context);
+      await input.hooks?.onItemStart?.(item);
+      if (item.status !== "succeeded") {
+        const result = addSkippedItem(report, item, "只恢复状态为成功的备份项目");
+        await input.hooks?.onItemFinish?.(item, { status: "skipped", warningCount: result.warnings.length });
+        await emitProgress(context);
+        continue;
+      }
+      const itemWarningsStart = report.warnings.length;
+      try {
+        await input.hooks?.onPhase?.("恢复中", item.title);
+        if (item.objectType === "data_source") {
+          const newDataSourceId = await restoreDataSourceArtifact(context, item.objectId, input.targetParentId, item.title);
+          const warnings = report.warnings.slice(itemWarningsStart);
+          report.items.push({
+            objectId: item.objectId,
+            objectType: item.objectType,
+            title: item.title,
+            status: "succeeded",
+            newDataSourceId,
+            warnings
+          });
+          await input.hooks?.onItemFinish?.(item, { status: "succeeded", newDataSourceId, warningCount: warnings.length });
+          await emitProgress(context);
+          continue;
+        }
+
+        const newPageId = await restorePageArtifact(context, item.objectId, { type: "page_id", page_id: input.targetParentId }, item.title);
         const warnings = report.warnings.slice(itemWarningsStart);
         report.items.push({
           objectId: item.objectId,
           objectType: item.objectType,
           title: item.title,
           status: "succeeded",
-          newDataSourceId,
+          newPageId,
           warnings
         });
-        continue;
+        await input.hooks?.onItemFinish?.(item, { status: "succeeded", newPageId, warningCount: warnings.length });
+        await emitProgress(context);
+      } catch (error) {
+        if (error instanceof RestoreCanceledError) {
+          const message = "用户取消恢复，当前项目可能只完成部分内容";
+          report.errors.push(message);
+          report.items.push({
+            objectId: item.objectId,
+            objectType: item.objectType,
+            title: item.title,
+            status: "failed",
+            warnings: report.warnings.slice(itemWarningsStart),
+            error: message
+          });
+          await input.hooks?.onItemFinish?.(item, { status: "failed", warningCount: report.warnings.length - itemWarningsStart, error: message });
+          throw error;
+        }
+        const message = errorMessage(error);
+        report.errors.push(message);
+        report.items.push({
+          objectId: item.objectId,
+          objectType: item.objectType,
+          title: item.title,
+          status: "failed",
+          warnings: report.warnings.slice(itemWarningsStart),
+          error: message
+        });
+        await input.hooks?.onItemFinish?.(item, { status: "failed", warningCount: report.warnings.length - itemWarningsStart, error: message });
+        await emitProgress(context);
       }
-
-      const newPageId = await restorePageArtifact(context, item.objectId, { type: "page_id", page_id: input.targetParentId }, item.title);
-      const warnings = report.warnings.slice(itemWarningsStart);
-      report.items.push({
-        objectId: item.objectId,
-        objectType: item.objectType,
-        title: item.title,
-        status: "succeeded",
-        newPageId,
-        warnings
-      });
-    } catch (error) {
-      const message = errorMessage(error);
-      report.errors.push(message);
-      report.items.push({
-        objectId: item.objectId,
-        objectType: item.objectType,
-        title: item.title,
-        status: "failed",
-        warnings: report.warnings.slice(itemWarningsStart),
-        error: message
-      });
     }
+  } catch (error) {
+    if (!(error instanceof RestoreCanceledError)) {
+      throw error;
+    }
+    finishReport(report, "canceled");
+    await persistRestoreReport(runDir, report);
+    return report;
   }
 
   finishReport(report);
   await persistRestoreReport(runDir, report);
   return report;
+}
+
+export async function preflightRestoreRun(input: { runId: string; targetParentId: string; token: string }): Promise<RestorePreflight> {
+  const run = getRun(input.runId);
+  await validateRestorePreflight(run);
+  const runDir = run.artifactDir;
+  if (!runDir) {
+    throw notFound("备份文件不存在");
+  }
+  const notion = new NotionClient(input.token);
+  await validateRestoreTarget(notion, input.targetParentId);
+  return summarizeRestorePreflight(run, input.targetParentId);
+}
+
+export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "runKey" | "artifactDir" | "items">, targetParentId: string): RestorePreflight {
+  const runDir = run.artifactDir ?? "";
+  const warnings: RestoreWarning[] = [];
+  let pages = 0;
+  let dataSources = 0;
+  let restorableItems = 0;
+  let skippedItems = 0;
+  for (const item of run.items) {
+    if (item.status !== "succeeded") {
+      skippedItems += 1;
+      warnings.push({
+        code: "restore_item_skipped",
+        message: `备份项目不是成功状态，恢复时会跳过：${item.title}`,
+        objectId: item.objectId
+      });
+      continue;
+    }
+    restorableItems += 1;
+    if (item.objectType === "page") {
+      pages += 1;
+      if (!existsSync(pageArtifactPath(runDir, item.objectId))) {
+        warnings.push({
+          code: "page_artifact_missing",
+          message: `页面备份文件不存在，恢复时会失败：${item.title}`,
+          objectId: item.objectId
+        });
+      }
+      continue;
+    }
+    dataSources += 1;
+    if (!existsSync(path.join(dataSourceArtifactPath(runDir, item.objectId), "schema.json"))) {
+      warnings.push({
+        code: "data_source_schema_missing",
+        message: `数据源 schema 备份文件不存在，恢复时会失败：${item.title}`,
+        objectId: item.objectId
+      });
+    }
+    if (!existsSync(path.join(dataSourceArtifactPath(runDir, item.objectId), "entries.json"))) {
+      warnings.push({
+        code: "data_source_entries_missing",
+        message: `数据源 entries 备份文件不存在，恢复时会失败：${item.title}`,
+        objectId: item.objectId
+      });
+    }
+  }
+  warnings.push({
+    code: "restore_creates_new_content",
+    message: "恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容"
+  });
+  return {
+    sourceRunId: run.id,
+    sourceRunKey: run.runKey,
+    targetParentId,
+    totalItems: run.items.length,
+    restorableItems,
+    skippedItems,
+    pages,
+    dataSources,
+    warnings
+  };
 }
 
 export async function validateRestorePreflight(run: Pick<BackupRunDetail, "artifactDir" | "status" | "items">): Promise<void> {
@@ -168,6 +293,7 @@ export async function getLatestRestoreReport(runId: string): Promise<RestoreRepo
 }
 
 async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: string, targetParentId: string, fallbackTitle?: string): Promise<string> {
+  assertRestoreNotCanceled(context);
   if (context.report.mappings.dataSources[dataSourceId]) {
     return context.report.mappings.dataSources[dataSourceId];
   }
@@ -226,6 +352,7 @@ async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: 
     allowedPropertyNames: new Set(Object.keys(schemaConversion.properties))
   };
   for (const entry of entries) {
+    assertRestoreNotCanceled(context);
     const entryPageId = String(entry.id ?? "");
     if (!entryPageId) {
       addWarning(context.report, {
@@ -255,6 +382,7 @@ async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: 
 }
 
 async function restorePageArtifact(context: RestoreContext, pageId: string, parent: RestoreParent, fallbackTitle?: string): Promise<string> {
+  assertRestoreNotCanceled(context);
   if (context.report.mappings.pages[pageId]) {
     return context.report.mappings.pages[pageId];
   }
@@ -276,6 +404,7 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, pare
     }
     const title = extractTitle(artifact.page) || fallbackTitle || "恢复页面";
     const createBody = createPageBody(parent, artifact, title, context.report, pageId);
+    assertRestoreNotCanceled(context);
     const restoredPage = await context.notion.createPage(createBody);
     const restoredPageId = String(restoredPage.id ?? "");
     if (!restoredPageId) {
@@ -301,6 +430,7 @@ async function appendBlocks(context: RestoreContext, parentBlockId: string, bloc
   };
 
   for (const block of blocks) {
+    assertRestoreNotCanceled(context);
     const oldBlockId = String(block.id ?? "");
     const rawChildBlocks = Array.isArray(block.children) ? (block.children as NotionObject[]) : [];
     const conversion = convertBlockForRestore(block);
@@ -352,6 +482,7 @@ async function appendBlockChunk(
   if (entries.length === 0) {
     return;
   }
+  assertRestoreNotCanceled(context);
   try {
     const response = await context.notion.appendBlockChildren(
       parentBlockId,
@@ -381,6 +512,7 @@ async function appendReturnedChildren(
   sourcePageId: string
 ): Promise<void> {
   for (const [index, entry] of entries.entries()) {
+    assertRestoreNotCanceled(context);
     const restored = results[index];
     const newBlockId = restored ? String(restored.id ?? "") : "";
     if (!newBlockId) {
@@ -612,20 +744,46 @@ function createPageBody(parent: RestoreParent, artifact: PageArtifact, title: st
   };
 }
 
-function finishReport(report: RestoreReport): void {
+async function validateRestoreTarget(notion: NotionClient, targetParentId: string): Promise<void> {
+  try {
+    await notion.retrievePage(targetParentId);
+  } catch (error) {
+    if (error instanceof NotionApiError && [401, 403, 404].includes(error.status)) {
+      throw badRequest("目标父页面不可访问，请确认页面已分享给当前 Notion 集成");
+    }
+    throw error;
+  }
+}
+
+function assertRestoreNotCanceled(context: RestoreContext): void {
+  if (context.shouldCancel?.()) {
+    throw new RestoreCanceledError();
+  }
+}
+
+async function emitProgress(context: RestoreContext): Promise<void> {
+  context.report.summary.failedItems = context.report.items.filter((item) => item.status === "failed").length;
+  context.report.summary.skippedItems = context.report.items.filter((item) => item.status === "skipped").length;
+  context.report.summary.warningCount = context.report.warnings.length;
+  await context.onProgress?.(context.report);
+}
+
+function finishReport(report: RestoreReport, statusOverride?: RestoreStatus): void {
   const failedItems = report.items.filter((item) => item.status === "failed").length;
   const skippedItems = report.items.filter((item) => item.status === "skipped").length;
   report.summary.failedItems = failedItems;
   report.summary.skippedItems = skippedItems;
   report.summary.warningCount = report.warnings.length;
   report.finishedAt = nowIso();
-  report.status = resolveRestoreStatus({
-    createdPages: report.summary.createdPages,
-    createdDataSources: report.summary.createdDataSources,
-    failedItems,
-    skippedItems,
-    errorCount: report.errors.length
-  });
+  report.status =
+    statusOverride ??
+    resolveRestoreStatus({
+      createdPages: report.summary.createdPages,
+      createdDataSources: report.summary.createdDataSources,
+      failedItems,
+      skippedItems,
+      errorCount: report.errors.length
+    });
 }
 
 async function persistRestoreReport(runDir: string, report: RestoreReport): Promise<void> {
@@ -702,7 +860,7 @@ function extractCreatedDataSourceId(response: NotionObject): string | null {
   return null;
 }
 
-function addSkippedItem(report: RestoreReport, item: BackupRunItem, message: string): void {
+function addSkippedItem(report: RestoreReport, item: BackupRunItem, message: string): { warnings: RestoreWarning[] } {
   const warning: RestoreWarning = {
     code: "restore_item_skipped",
     message,
@@ -716,6 +874,7 @@ function addSkippedItem(report: RestoreReport, item: BackupRunItem, message: str
     status: "skipped",
     warnings: [warning]
   });
+  return { warnings: [warning] };
 }
 
 function addWarning(report: RestoreReport, warning: RestoreWarning): void {

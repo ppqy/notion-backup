@@ -24,11 +24,22 @@ import {
   XCircle
 } from "lucide-react";
 import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
-import type { BackupPlan, BackupRunDetail, BackupRunStatus, DiscoveredContent, NotionConnectionStatus, RestoreReport, SelectedContent } from "../shared/types";
+import type {
+  BackupPlan,
+  BackupRunDetail,
+  BackupRunStatus,
+  DiscoveredContent,
+  NotionConnectionStatus,
+  RestorePreflight,
+  RestoreReport,
+  RestoreRunDetail,
+  RestoreRunStatus,
+  SelectedContent
+} from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
 import "./styles.css";
 
-type View = "dashboard" | "notion" | "plans" | "history" | "security";
+type View = "dashboard" | "notion" | "plans" | "history" | "restore" | "security";
 
 const defaultPlan: PlanPayload = {
   name: "",
@@ -297,6 +308,7 @@ function Shell({ onLogout }: { onLogout: () => Promise<void> }) {
           <NavButton icon={<KeyRound />} label="Notion" active={view === "notion"} onClick={() => setView("notion")} />
           <NavButton icon={<CalendarClock />} label="计划" active={view === "plans"} onClick={() => setView("plans")} />
           <NavButton icon={<History />} label="历史" active={view === "history"} onClick={() => setView("history")} />
+          <NavButton icon={<RotateCcw />} label="恢复" active={view === "restore"} onClick={() => setView("restore")} />
           <NavButton icon={<Settings />} label="安全" active={view === "security"} onClick={() => setView("security")} />
         </nav>
         <button className="nav-button" type="button" onClick={logout}>
@@ -309,6 +321,7 @@ function Shell({ onLogout }: { onLogout: () => Promise<void> }) {
         {view === "notion" ? <NotionView /> : null}
         {view === "plans" ? <PlansView /> : null}
         {view === "history" ? <HistoryView /> : null}
+        {view === "restore" ? <RestoreHistoryView /> : null}
         {view === "security" ? <SecurityView /> : null}
       </main>
     </div>
@@ -851,6 +864,157 @@ function HistoryView() {
   );
 }
 
+function RestoreHistoryView() {
+  const [runs, setRuns] = useState<Awaited<ReturnType<typeof endpoints.restores>> | null>(null);
+  const [detail, setDetail] = useState<RestoreRunDetail | null>(null);
+  const [filters, setFilters] = useState({ q: "", status: "", page: 1 });
+
+  const load = async () => {
+    const params = new URLSearchParams({ page: String(filters.page), pageSize: "20" });
+    if (filters.q) params.set("q", filters.q);
+    if (filters.status) params.set("status", filters.status);
+    setRuns(await endpoints.restores(params));
+    if (detail) {
+      setDetail(await endpoints.restoreDetail(detail.id).catch(() => detail));
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [filters, detail?.id]);
+
+  return (
+    <section>
+      <PageHeader title="恢复" />
+      <div className="toolbar">
+        <label className="search-box">
+          <Search />
+          <input value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value, page: 1 })} placeholder="搜索恢复记录或目标页面" />
+        </label>
+        <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value, page: 1 })}>
+          <option value="">全部状态</option>
+          <option value="queued">排队中</option>
+          <option value="running">运行中</option>
+          <option value="cancel_requested">取消中</option>
+          <option value="succeeded">成功</option>
+          <option value="partial_failed">部分失败</option>
+          <option value="failed">失败</option>
+          <option value="canceled">已取消</option>
+        </select>
+      </div>
+      <div className="run-list">
+        {runs?.items.map((run) => (
+          <RestoreRunRow
+            key={run.id}
+            run={run}
+            onClick={async () => setDetail(await endpoints.restoreDetail(run.id))}
+            actions={
+              ["queued", "running", "cancel_requested"].includes(run.status) ? (
+                <button className="secondary" type="button" onClick={() => void endpoints.cancelRestore(run.id).then(load)}>
+                  <Square />
+                  取消
+                </button>
+              ) : null
+            }
+          />
+        ))}
+      </div>
+      {runs && runs.items.length === 0 ? <p className="muted">暂无恢复记录。可以从备份历史详情中发起恢复。</p> : null}
+      {detail ? <RestoreRunDetailDrawer detail={detail} onClose={() => setDetail(null)} onChanged={async () => setDetail(await endpoints.restoreDetail(detail.id))} /> : null}
+    </section>
+  );
+}
+
+function RestoreRunRow({
+  run,
+  onClick,
+  actions
+}: {
+  run: Awaited<ReturnType<typeof endpoints.restores>>["items"][number];
+  onClick?: () => void;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <article className={`run-row ${onClick ? "clickable" : ""}`} onClick={onClick}>
+      <StatusBadge status={run.status} />
+      <div>
+        <h2>{run.sourceRunKey}</h2>
+        <p className="muted">
+          {formatDate(run.createdAt)} · 目标 {run.targetParentId}
+          {run.currentPhase ? ` · ${run.currentPhase}` : ""}
+        </p>
+      </div>
+      <div className="progress-text">
+        {run.processedItems}/{run.totalItems}
+        {run.warningCount ? ` · 警告 ${run.warningCount}` : ""}
+        {run.failedItems ? ` · 失败 ${run.failedItems}` : ""}
+      </div>
+      <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+        {actions}
+      </div>
+    </article>
+  );
+}
+
+function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: RestoreRunDetail; onClose: () => void; onChanged: () => Promise<void> }) {
+  return (
+    <div className="drawer" onClick={onClose}>
+      <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="section-header">
+          <h2>{detail.restoreKey}</h2>
+          <button className="ghost" type="button" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <div className="status-line">
+          <StatusBadge status={detail.status} />
+          <span>{restoreRunStatusLabel(detail.status)}</span>
+          <span className="muted">来源备份：{detail.sourceRunKey}</span>
+        </div>
+        <div className="metrics compact">
+          <Metric label="新建页面" value={String(detail.createdPages)} />
+          <Metric label="新建数据源" value={String(detail.createdDataSources)} />
+          <Metric label="新建区块" value={String(detail.createdBlocks)} />
+          <Metric label="警告" value={String(detail.warningCount)} />
+          <Metric label="失败" value={String(detail.failedItems)} />
+        </div>
+        <p className="muted">目标父页面：{detail.targetParentId}</p>
+        {["queued", "running", "cancel_requested"].includes(detail.status) ? (
+          <button
+            className="secondary"
+            type="button"
+            onClick={async () => {
+              await endpoints.cancelRestore(detail.id);
+              await onChanged();
+            }}
+          >
+            <Square />
+            取消恢复
+          </button>
+        ) : null}
+        <div className="table">
+          {detail.items.map((item) => (
+            <div className="table-row" key={item.id}>
+              <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : item.status === "skipped" ? "canceled" : "running"} />
+              <div>
+                <strong>{item.title}</strong>
+                <p className="muted">
+                  {item.objectType === "page" ? "页面" : "数据源"} ·{" "}
+                  {item.newDataSourceId ? `新数据源：${item.newDataSourceId}` : item.newPageId ? `新页面：${item.newPageId}` : item.errorMessage || "等待处理"}
+                  {item.warningCount ? ` · 警告 ${item.warningCount}` : ""}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+        {detail.report ? <RestoreReportSummary report={detail.report} /> : null}
+      </section>
+    </div>
+  );
+}
+
 function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () => void }) {
   return (
     <div className="drawer" onClick={onClose}>
@@ -900,6 +1064,8 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
 function RestorePanel({ detail }: { detail: BackupRunDetail }) {
   const [targetParent, setTargetParent] = useState("");
   const [report, setReport] = useState<RestoreReport | null>(null);
+  const [preflight, setPreflight] = useState<RestorePreflight | null>(null);
+  const [restoreRun, setRestoreRun] = useState<RestoreRunDetail | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const canRestore = Boolean(detail.artifactDir && detail.manifestAvailable && ["succeeded", "partial_failed"].includes(detail.status));
@@ -913,22 +1079,42 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     void loadLatest().catch(() => undefined);
   }, [detail.id]);
 
-  async function submit(event: React.FormEvent) {
+  async function submitPreflight(event: React.FormEvent) {
     event.preventDefault();
     setMessage("");
+    setPreflight(null);
+    setRestoreRun(null);
     if (!targetParent.trim()) {
       setMessage("请输入目标父页面 URL 或 ID");
       return;
     }
-    if (!confirm("恢复会在目标父页面下创建新的 Notion 页面和数据源，不会覆盖原内容。继续？")) {
+    setBusy(true);
+    try {
+      setPreflight(await endpoints.preflightRestore(detail.id, targetParent.trim()));
+      setMessage("预检完成，确认后会创建恢复任务");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startRestore() {
+    if (!targetParent.trim()) {
+      setMessage("请输入目标父页面 URL 或 ID");
+      return;
+    }
+    if (!confirm("恢复任务会在目标父页面下创建新的 Notion 页面和数据源，不会覆盖原内容。继续入队？")) {
       return;
     }
     setBusy(true);
+    setMessage("");
     try {
-      const nextReport = await endpoints.restoreRun(detail.id, targetParent.trim());
-      setReport(nextReport);
+      const queued = await endpoints.restoreRun(detail.id, targetParent.trim());
+      setRestoreRun(queued);
       setTargetParent("");
-      setMessage("恢复完成");
+      setPreflight(null);
+      setMessage("恢复任务已排队，可在「恢复」中查看进度");
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -943,17 +1129,51 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
         {report ? <span className="muted">最近恢复：{formatDate(report.startedAt)}</span> : null}
       </div>
       <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、视图、本地文件和无法映射的关系会记录为警告。</p>
-      <form className="inline-form" onSubmit={submit}>
+      <form className="inline-form" onSubmit={submitPreflight}>
         <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
         <button className="primary" type="submit" disabled={!canRestore || busy}>
-          {busy ? <Loader2 className="spin" /> : <RotateCcw />}
-          开始恢复
+          {busy ? <Loader2 className="spin" /> : <Search />}
+          预检
         </button>
+        {preflight ? (
+          <button className="secondary" type="button" disabled={!canRestore || busy} onClick={() => void startRestore()}>
+            <RotateCcw />
+            确认入队
+          </button>
+        ) : null}
       </form>
       {!canRestore ? <p className="message info">只有已完成或部分失败、且 manifest 可用的备份记录可以恢复。</p> : null}
-      {message ? <p className={message.includes("完成") ? "message success" : "message error"}>{message}</p> : null}
+      {message ? <p className={message.includes("完成") || message.includes("已排队") ? "message success" : "message error"}>{message}</p> : null}
+      {preflight ? <RestorePreflightSummary preflight={preflight} /> : null}
+      {restoreRun ? <p className="message info">恢复记录：{restoreRun.restoreKey} · {restoreRunStatusLabel(restoreRun.status)}</p> : null}
       {report ? <RestoreReportSummary report={report} /> : null}
     </section>
+  );
+}
+
+function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight }) {
+  const warnings = preflight.warnings.slice(0, 6);
+  return (
+    <div className="restore-report">
+      <div className="metrics compact">
+        <Metric label="可恢复" value={String(preflight.restorableItems)} />
+        <Metric label="页面" value={String(preflight.pages)} />
+        <Metric label="数据源" value={String(preflight.dataSources)} />
+        <Metric label="将跳过" value={String(preflight.skippedItems)} />
+      </div>
+      <p className="muted">目标父页面：{preflight.targetParentId}</p>
+      {warnings.length > 0 ? (
+        <div className="warning-list">
+          <strong>预检提示</strong>
+          {warnings.map((warning, index) => (
+            <p className="muted" key={`${warning.code}-${index}`}>
+              {warning.message}
+            </p>
+          ))}
+          {preflight.warnings.length > warnings.length ? <p className="muted">还有 {preflight.warnings.length - warnings.length} 条提示会写入恢复记录。</p> : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1108,7 +1328,7 @@ function RunRow({ run, onClick, actions }: { run: Awaited<ReturnType<typeof endp
   );
 }
 
-function StatusBadge({ status }: { status: BackupRunStatus | "failed" | "succeeded" | "running" }) {
+function StatusBadge({ status }: { status: BackupRunStatus | RestoreRunStatus | "failed" | "succeeded" | "running" }) {
   const icon = status === "succeeded" ? <CheckCircle2 /> : status === "failed" || status === "partial_failed" ? <XCircle /> : <Loader2 className="spin" />;
   return <span className={`status-badge ${status}`}>{icon}</span>;
 }
@@ -1138,6 +1358,19 @@ function statusLabel(status: BackupRunStatus): string {
 function restoreStatusLabel(status: RestoreReport["status"]): string {
   const labels: Record<RestoreReport["status"], string> = {
     running: "运行中",
+    succeeded: "成功",
+    partial_failed: "部分失败",
+    failed: "失败",
+    canceled: "已取消"
+  };
+  return labels[status];
+}
+
+function restoreRunStatusLabel(status: RestoreRunStatus): string {
+  const labels: Record<RestoreRunStatus, string> = {
+    queued: "排队中",
+    running: "运行中",
+    cancel_requested: "取消中",
     succeeded: "成功",
     partial_failed: "部分失败",
     failed: "失败",

@@ -130,6 +130,8 @@ export type BackupRunDetail = BackupRunSummary & {
 
 export type RestoreStatus = "running" | "succeeded" | "partial_failed" | "failed" | "canceled";
 
+export type RestoreRunStatus = "queued" | "running" | "cancel_requested" | RestoreStatus;
+
 export type RestoreWarning = {
   code: string;
   message: string;
@@ -175,6 +177,62 @@ export type RestoreReport = {
   warnings: RestoreWarning[];
   errors: string[];
   manifestPath: string | null;
+};
+
+export type RestoreRunSummary = {
+  id: string;
+  restoreKey: string;
+  sourceRunId: string;
+  sourceRunKey: string;
+  targetParentId: string;
+  status: RestoreRunStatus;
+  statusMessage: string | null;
+  currentPhase: string | null;
+  currentItemTitle: string | null;
+  totalItems: number;
+  processedItems: number;
+  failedItems: number;
+  skippedItems: number;
+  warningCount: number;
+  errorCount: number;
+  createdPages: number;
+  createdDataSources: number;
+  createdBlocks: number;
+  manifestPath: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
+export type RestoreRunItem = {
+  id: string;
+  objectId: string;
+  objectType: NotionObjectType;
+  title: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "skipped";
+  newPageId: string | null;
+  newDataSourceId: string | null;
+  warningCount: number;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type RestoreRunDetail = RestoreRunSummary & {
+  items: RestoreRunItem[];
+  report: RestoreReport | null;
+};
+
+export type RestorePreflight = {
+  sourceRunId: string;
+  sourceRunKey: string;
+  targetParentId: string;
+  totalItems: number;
+  restorableItems: number;
+  skippedItems: number;
+  pages: number;
+  dataSources: number;
+  warnings: RestoreWarning[];
 };
 
 export type DashboardOverview = {

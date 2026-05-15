@@ -25,7 +25,8 @@ import { createPlan, listPlans, softDeletePlan, updatePlan } from "./repositorie
 import { BackupWorker } from "./backupWorker.js";
 import { deleteRun, getLatestRun, getRun, getRunningRuns, listRuns, requestRunCancel, updateRun } from "./repositories/runRepository.js";
 import { directorySizeBytes, generateZip } from "./storage.js";
-import { getLatestRestoreReport, restoreRunToNotion } from "./restore.js";
+import { getLatestRestoreReport, preflightRestoreRun } from "./restore.js";
+import { createRestoreRun, getLatestRestoreRunForSource, getRestoreRun, listRestoreRuns, requestRestoreCancel } from "./repositories/restoreRepository.js";
 
 const querySchema = z.object({
   q: z.string().optional(),
@@ -35,6 +36,7 @@ const querySchema = z.object({
   status: z.string().optional(),
   triggerType: z.enum(["manual", "scheduled"]).optional(),
   planId: z.string().optional(),
+  sourceRunId: z.string().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional()
 });
@@ -253,20 +255,61 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
 
   app.get("/api/runs/:id/restore/latest", async (request) => {
     requireUser(request);
+    const latest = getLatestRestoreRunForSource(getParam(request, "id"));
+    if (latest?.report) {
+      return {
+        report: latest.report
+      };
+    }
     return {
       report: await getLatestRestoreReport(getParam(request, "id"))
     };
+  });
+
+  app.post("/api/runs/:id/restore/preflight", async (request) => {
+    requireUser(request);
+    const input = parseBody(restoreRunSchema, request.body);
+    const token = requireNotionToken();
+    return preflightRestoreRun({
+      runId: getParam(request, "id"),
+      targetParentId: normalizeNotionId(input.targetParent),
+      token
+    });
   });
 
   app.post("/api/runs/:id/restore", async (request) => {
     requireUser(request);
     const input = parseBody(restoreRunSchema, request.body);
     const token = requireNotionToken();
-    return restoreRunToNotion({
+    const targetParentId = normalizeNotionId(input.targetParent);
+    await preflightRestoreRun({
       runId: getParam(request, "id"),
-      targetParentId: normalizeNotionId(input.targetParent),
+      targetParentId,
       token
     });
+    return createRestoreRun(getRun(getParam(request, "id")), targetParentId);
+  });
+
+  app.get("/api/restores", async (request) => {
+    requireUser(request);
+    const query = querySchema.parse(request.query);
+    return listRestoreRuns({
+      page: query.page,
+      pageSize: query.pageSize,
+      status: query.status as never,
+      sourceRunId: query.sourceRunId,
+      q: query.q
+    });
+  });
+
+  app.get("/api/restores/:id", async (request) => {
+    requireUser(request);
+    return getRestoreRun(getParam(request, "id"));
+  });
+
+  app.post("/api/restores/:id/cancel", async (request) => {
+    requireUser(request);
+    return requestRestoreCancel(getParam(request, "id"));
   });
 
   app.post("/api/runs/:id/cancel", async (request) => {

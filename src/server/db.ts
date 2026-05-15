@@ -130,6 +130,60 @@ const migrations = [
 
       CREATE INDEX IF NOT EXISTS idx_backup_run_items_run ON backup_run_items(run_id);
     `
+  },
+  {
+    id: "002_restore_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS restore_runs (
+        id TEXT PRIMARY KEY,
+        restore_key TEXT NOT NULL UNIQUE,
+        source_run_id TEXT NOT NULL REFERENCES backup_runs(id) ON DELETE CASCADE,
+        source_run_key TEXT NOT NULL,
+        target_parent_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        status_message TEXT,
+        current_phase TEXT,
+        current_item_title TEXT,
+        total_items INTEGER NOT NULL DEFAULT 0,
+        processed_items INTEGER NOT NULL DEFAULT 0,
+        failed_items INTEGER NOT NULL DEFAULT 0,
+        skipped_items INTEGER NOT NULL DEFAULT 0,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        created_pages INTEGER NOT NULL DEFAULT 0,
+        created_data_sources INTEGER NOT NULL DEFAULT 0,
+        created_blocks INTEGER NOT NULL DEFAULT 0,
+        manifest_path TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        cancel_requested_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_restore_runs_created ON restore_runs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_restore_runs_status ON restore_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_restore_runs_source ON restore_runs(source_run_id);
+
+      CREATE TABLE IF NOT EXISTS restore_run_items (
+        id TEXT PRIMARY KEY,
+        restore_run_id TEXT NOT NULL REFERENCES restore_runs(id) ON DELETE CASCADE,
+        object_id TEXT NOT NULL,
+        object_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        new_page_id TEXT,
+        new_data_source_id TEXT,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_restore_run_items_restore ON restore_run_items(restore_run_id);
+    `
   }
 ] as const;
 

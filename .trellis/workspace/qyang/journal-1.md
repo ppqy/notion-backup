@@ -138,7 +138,10 @@ Added a GitHub Actions workflow to build and publish the Docker image to GHCR, d
 
 ### Main Changes
 
-(Add details)
+- Changed default Compose deployment from local `build: .` to `ghcr.io/ppqy/notion-backup:main`.
+- Switched `/data` persistence from the named volume to the host bind mount `./data:/data`.
+- Updated English and Chinese README instructions to remove `--build`, document the `main` image, and describe host-visible backup data.
+- Recorded the default image and bind mount convention in the ops container publishing spec.
 
 ### Git Commits
 
@@ -148,7 +151,11 @@ Added a GitHub Actions workflow to build and publish the Docker image to GHCR, d
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `docker compose config`
+- [OK] `npm run lint`
+- [OK] `npm run build`
+- [OK] `npm test`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -178,6 +185,39 @@ Recorded JSON-first Notion backup research, future restore/import limitations, a
 | Hash | Message |
 |------|---------|
 | `e6758a8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 6: Use published Docker image by default
+
+**Date**: 2026-05-15
+**Task**: Use published Docker image by default
+**Branch**: `main`
+
+### Summary
+
+Updated Docker Compose to pull the GHCR main image by default, switched persistence to ./data bind mount, synchronized English and Chinese README deployment guidance, and recorded the ops convention.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0264498` | (see git log) |
 
 ### Testing
 

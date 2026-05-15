@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/backup-artifacts-and-restore.md", "reason": "Restore artifact contracts, data source restore behavior, and property conversion limits"}
+{"file": ".trellis/tasks/05-15-notion-restore-data-sources-page-properties/research/restore-data-sources-page-properties.md", "reason": "Data source and page property restore implementation direction"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Backend restore service and Notion wrapper placement"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Restore validation and user-facing errors"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality gates and test expectations"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Restore report UI conventions"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Shared restore DTO and frontend typing"}

@@ -93,7 +93,8 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 **Related Research**:
 
 * `.trellis/tasks/archive/2026-05/05-15-notion-backup-restore-research/research/notion-json-backup-and-restore.md`
-* `.trellis/tasks/05-15-notion-backup-restore-options/research/restore-options-to-notion.md`
+* `.trellis/tasks/archive/2026-05/05-15-notion-backup-restore-options/research/restore-options-to-notion.md`
+* `.trellis/tasks/05-15-notion-restore-data-sources-page-properties/research/restore-data-sources-page-properties.md`
 
 ## Scenario: Page JSON Restore MVP
 
@@ -117,8 +118,9 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Restore creates new Notion pages under a target parent page. It must not overwrite, move, or delete original Notion content.
 * `targetParent` accepts Notion URL or ID and is normalized through `normalizeNotionId`.
 * Restore requires an authenticated dashboard session and a configured Notion token.
-* Restore currently supports successful page run items only. Data source items are skipped with warnings until data source restore is implemented.
-* Page creation restores title and compatible emoji/icon/custom emoji/external icons plus external covers. Non-title page properties are not written in this MVP and must be warned.
+* Restore supports successful page run items and successful data source run items.
+* Standalone page creation under the selected target parent restores title and compatible emoji/icon/custom emoji/external icons plus external covers. Non-title page properties cannot be written to a plain page parent and must be warned.
+* Data source entry page creation under a restored data source can restore supported writable page property values; unsupported/read-only values must be warned.
 * Block conversion must strip response-only fields and downgrade unsupported rich text mentions to plain text with warnings.
 * Child pages are restored recursively when their page JSON artifact exists.
 * Notion-hosted/local file upload restore is not implemented in this MVP. External media URLs may be reattached; Notion-hosted file blocks must warn and skip.
@@ -134,13 +136,14 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Missing artifact directory -> `404 not_found`.
 * Missing backup `manifest.json` -> `404 not_found`.
 * No successful run items -> `400 bad_request`.
-* Data source run item -> skipped item plus `data_source_restore_not_implemented` warning.
+* Data source run item with missing `schema.json` or `entries.json` -> fail that item.
+* Unsupported data source schema property -> skip that property and warn by name/type.
 * Unsupported block/property/comment/file behavior -> warning in restore report, not silent success.
 
 ### 5. Good/Base/Bad Cases
 
 * Good: user starts restore from a successful run, page JSON is read, new pages are created, block mappings are recorded, and `restore-manifest.json` is written.
-* Base: run includes data source or unsupported blocks; supported pages restore and report status becomes `partial_failed` when items are skipped/failed.
+* Base: run includes data source, unsupported schema properties, or unsupported blocks; supported pages/data sources restore and report status becomes `partial_failed` when items are skipped/failed.
 * Bad: restore uses `markdown/<page-id>.md`, silently drops relation/comment/file information, or claims original Notion IDs were preserved.
 
 ### 6. Tests Required
@@ -150,6 +153,7 @@ await appendBlocksFromJson(restoredPage.id, artifact.blocks);
 * Child page conversion tests must assert recursive page restore action.
 * File block tests must assert Notion-hosted file upload is skipped with warning until upload restore exists.
 * Page artifact warning tests must assert skipped properties/comments are reported.
+* Data source restore tests must assert schema conversion, page property conversion, data source summary/mapping fields, and relation/schema warning behavior.
 * Status resolution tests must assert skipped-only restores fail and mixed restores are partial.
 * API/shared DTO changes must pass `npm run lint`, `npm run build`, and targeted Vitest tests.
 
@@ -168,4 +172,74 @@ await notion.createPage({ parent, markdown });
 const artifact = await readPageArtifact(runDir, pageId);
 const restoredPage = await notion.createPage(createPageBody(targetParentId, artifact.page, title));
 await appendBlocks(restoredPage.id, artifact.blocks);
+```
+
+## Scenario: Data Source and Page Property Restore
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to data source restore, page property conversion, restore summary fields, or data source old-to-new mappings.
+
+### 2. Signatures
+
+* Start restore remains `POST /api/runs/:id/restore`.
+* Service entry point remains `restoreRunToNotion({ runId, targetParentId, token })`.
+* Data source artifacts read from `runs/<run-key>/data-sources/<data-source-id>/schema.json` and `entries.json`.
+* Entry page artifacts read from `runs/<run-key>/pages/<entry-page-id>.json`.
+* Notion container creation uses `POST /databases` with `initial_data_source`.
+* Entry page creation uses `POST /pages` with parent `{ "type": "data_source_id", "data_source_id": "<new-id>" }`.
+* `RestoreReport.summary.createdDataSources` records created data source count.
+* `RestoreItemResult.newDataSourceId` records the restored data source ID for data source items.
+
+### 3. Contracts
+
+* Data source restore creates a new database/data source under the selected target parent page; it must not overwrite, move, or delete source content.
+* The restore report must record `mappings.dataSources[oldDataSourceId] = newDataSourceId`.
+* Data source schema conversion should keep stable writable schema types: `title`, `rich_text`, `number`, `select`, `multi_select`, `status`, `date`, `checkbox`, `url`, `email`, `phone_number`, `files`, `people`, `unique_id`, created/edited metadata, and `place` when accepted by the API.
+* Relation, rollup, formula, button, location, verification, and last-visited schema properties are skipped with warnings in the current slice.
+* Page property conversion should keep writable values: title, rich text, number, checkbox, select, multi-select, status, date, URL, email, phone number, place, external file references, and mapped relations.
+* Select/status/multi-select values must be sent by name/color/description, not old option IDs.
+* Rich text and property values must strip response-only fields such as `plain_text`, `href`, and old option IDs.
+* Local/Notion-hosted file values remain out of scope; external file references may be preserved.
+* Relation values may be written only for pages that already have an old-to-new page mapping. Unmapped relations are skipped with warnings.
+
+### 4. Validation & Error Matrix
+
+* Missing data source `schema.json` -> item failure with a user-facing artifact error.
+* Missing data source `entries.json` -> item failure with a user-facing artifact error.
+* Database/data source create response lacks a new data source ID -> item failure with `Notion 未返回新数据源 ID`.
+* Entry page artifact missing -> data source item can still create the container, records an entry failure warning/error, and final report becomes partial.
+* Unsupported schema property -> skip property and add a restore warning with property name/type.
+* Page property not present in the restored schema -> skip value and add `page_property_schema_missing`.
+* Unmapped relation page -> skip that relation target and add `relation_property_unresolved`.
+
+### 5. Good/Base/Bad Cases
+
+* Good: selected data source restores a new data source, creates entry pages under it, records data source and page mappings, writes supported properties, and warns for unsupported fields.
+* Base: data source has relation/formula/rollup/local files; stable schema and values restore, unsupported parts are visible as warnings, and status may be partial.
+* Bad: restore silently drops properties, sends old select option IDs to a new data source, or claims formulas/rollups/relations were fully restored when they were skipped.
+
+### 6. Tests Required
+
+* Schema conversion tests assert writable schema output and warning codes for skipped relation/formula/rollup properties.
+* Page property conversion tests assert response-only fields are stripped and supported values are retained.
+* File property tests assert external files are preserved and Notion/local files warn.
+* Relation tests assert mapped relation IDs are rewritten and unmapped IDs warn.
+* Restore status tests assert created data sources count toward partial success.
+* Shared DTO/UI changes must pass `npm run lint`, `npm run build`, and `npm test`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Old IDs from the source data source do not belong to the new data source.
+properties.Status = { status: { id: oldStatusOptionId } };
+```
+
+#### Correct
+
+```ts
+// Recreate values by stable names/options and let Notion assign new IDs.
+properties.Status = { status: { name: oldStatusOptionName } };
 ```

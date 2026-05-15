@@ -304,3 +304,38 @@ Implemented data source restore, entry page property restoration, restore report
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Restore history, preflight, and cancellation
+
+**Date**: 2026-05-15
+**Task**: Restore history, preflight, and cancellation
+**Branch**: `main`
+
+### Summary
+
+Added first-class restore job history with preflight, progress, cancellation, and fixed cooperative backup cancellation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ec800ee` | (see git log) |
+| `f5aadc2` | (see git log) |
+| `7e5c42d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

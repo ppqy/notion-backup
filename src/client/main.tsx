@@ -14,6 +14,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Search,
   Settings,
@@ -23,7 +24,7 @@ import {
   XCircle
 } from "lucide-react";
 import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
-import type { BackupPlan, BackupRunDetail, BackupRunStatus, DiscoveredContent, NotionConnectionStatus, SelectedContent } from "../shared/types";
+import type { BackupPlan, BackupRunDetail, BackupRunStatus, DiscoveredContent, NotionConnectionStatus, RestoreReport, SelectedContent } from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
 import "./styles.css";
 
@@ -879,6 +880,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
             </a>
           ) : null}
         </div>
+        <RestorePanel detail={detail} />
         <div className="table">
           {detail.items.map((item) => (
             <div className="table-row" key={item.id}>
@@ -891,6 +893,115 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function RestorePanel({ detail }: { detail: BackupRunDetail }) {
+  const [targetParent, setTargetParent] = useState("");
+  const [report, setReport] = useState<RestoreReport | null>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canRestore = Boolean(detail.artifactDir && detail.manifestAvailable && ["succeeded", "partial_failed"].includes(detail.status));
+
+  async function loadLatest() {
+    const result = await endpoints.latestRestore(detail.id);
+    setReport(result.report);
+  }
+
+  useEffect(() => {
+    void loadLatest().catch(() => undefined);
+  }, [detail.id]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    if (!targetParent.trim()) {
+      setMessage("请输入目标父页面 URL 或 ID");
+      return;
+    }
+    if (!confirm("恢复会在目标父页面下创建新的 Notion 页面，不会覆盖原内容。继续？")) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const nextReport = await endpoints.restoreRun(detail.id, targetParent.trim());
+      setReport(nextReport);
+      setTargetParent("");
+      setMessage("恢复完成");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="restore-panel">
+      <div className="section-header">
+        <h2>恢复到 Notion</h2>
+        {report ? <span className="muted">最近恢复：{formatDate(report.startedAt)}</span> : null}
+      </div>
+      <p className="muted">恢复会创建新的 Notion 页面，不会覆盖或回滚原页面。当前版本恢复页面和常见区块，数据源、评论、关系、视图和本地文件会记录为警告。</p>
+      <form className="inline-form" onSubmit={submit}>
+        <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
+        <button className="primary" type="submit" disabled={!canRestore || busy}>
+          {busy ? <Loader2 className="spin" /> : <RotateCcw />}
+          开始恢复
+        </button>
+      </form>
+      {!canRestore ? <p className="message info">只有已完成或部分失败、且 manifest 可用的备份记录可以恢复。</p> : null}
+      {message ? <p className={message.includes("完成") ? "message success" : "message error"}>{message}</p> : null}
+      {report ? <RestoreReportSummary report={report} /> : null}
+    </section>
+  );
+}
+
+function RestoreReportSummary({ report }: { report: RestoreReport }) {
+  const warnings = report.warnings.slice(0, 8);
+  const errors = report.errors.slice(0, 5);
+  return (
+    <div className="restore-report">
+      <div className="metrics compact">
+        <Metric label="状态" value={restoreStatusLabel(report.status)} />
+        <Metric label="新建页面" value={String(report.summary.createdPages)} />
+        <Metric label="新建区块" value={String(report.summary.createdBlocks)} />
+        <Metric label="警告" value={String(report.summary.warningCount)} />
+        <Metric label="失败" value={String(report.summary.failedItems)} />
+      </div>
+      <p className="muted">目标父页面：{report.targetParentId}</p>
+      <div className="table">
+        {report.items.map((item) => (
+          <div className="table-row" key={`${item.objectId}-${item.status}`}>
+            <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : "canceled"} />
+            <div>
+              <strong>{item.title}</strong>
+              <p className="muted">{item.status === "succeeded" ? `新页面：${item.newPageId}` : item.error || item.warnings[0]?.message || "已跳过"}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      {warnings.length > 0 ? (
+        <div className="warning-list">
+          <strong>警告</strong>
+          {warnings.map((warning, index) => (
+            <p className="muted" key={`${warning.code}-${index}`}>
+              {warning.message}
+            </p>
+          ))}
+          {report.warnings.length > warnings.length ? <p className="muted">还有 {report.warnings.length - warnings.length} 条警告记录在 restore manifest 中。</p> : null}
+        </div>
+      ) : null}
+      {errors.length > 0 ? (
+        <div className="warning-list">
+          <strong>错误</strong>
+          {errors.map((error, index) => (
+            <p className="message error" key={`${error}-${index}`}>
+              {error}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1009,6 +1120,17 @@ function statusLabel(status: BackupRunStatus): string {
     queued: "排队中",
     running: "运行中",
     cancel_requested: "取消中",
+    succeeded: "成功",
+    partial_failed: "部分失败",
+    failed: "失败",
+    canceled: "已取消"
+  };
+  return labels[status];
+}
+
+function restoreStatusLabel(status: RestoreReport["status"]): string {
+  const labels: Record<RestoreReport["status"], string> = {
+    running: "运行中",
     succeeded: "成功",
     partial_failed: "部分失败",
     failed: "失败",

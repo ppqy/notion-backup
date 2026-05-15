@@ -296,6 +296,10 @@ h2 {
   margin-bottom: 20px;
 }
 
+.metrics.compact {
+  margin-bottom: 0;
+}
+
 .metric,
 .section,
 .empty-band,
@@ -327,6 +331,19 @@ h2 {
   gap: 14px;
   margin-bottom: 18px;
   padding: 18px;
+}
+
+.restore-panel,
+.restore-report,
+.warning-list {
+  display: grid;
+  gap: 12px;
+}
+
+.restore-panel {
+  border-bottom: 1px solid #dde3ea;
+  border-top: 1px solid #dde3ea;
+  padding: 16px 0;
 }
 
 .empty-band {

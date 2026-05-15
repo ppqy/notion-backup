@@ -169,6 +169,24 @@ export class NotionClient {
     });
   }
 
+  async createPage(body: unknown): Promise<NotionObject> {
+    return this.request({
+      method: "POST",
+      path: "pages",
+      body
+    });
+  }
+
+  async appendBlockChildren(blockId: string, children: NotionObject[]): Promise<{ results: NotionObject[]; has_more: boolean; next_cursor: string | null }> {
+    return this.request({
+      method: "PATCH",
+      path: `blocks/${blockId}/children`,
+      body: {
+        children
+      }
+    });
+  }
+
   private async throttle(): Promise<void> {
     const elapsed = Date.now() - this.lastRequestAt;
     const waitMs = Math.max(0, 350 - elapsed);

@@ -7,6 +7,7 @@ import type {
   EncryptionKeyInfo,
   NotionConnectionStatus,
   PageResult,
+  RestoreReport,
   SessionResponse,
   SetupStatus
 } from "../shared/types";
@@ -57,6 +58,8 @@ export const endpoints = {
   runPlan: (id: string) => api<BackupRunSummary>(`/api/plans/${id}/run`, { method: "POST" }),
   runs: (params: URLSearchParams) => api<PageResult<BackupRunSummary>>(`/api/runs?${params}`),
   runDetail: (id: string) => api<BackupRunDetail>(`/api/runs/${id}`),
+  latestRestore: (id: string) => api<{ report: RestoreReport | null }>(`/api/runs/${id}/restore/latest`),
+  restoreRun: (id: string, targetParent: string) => api<RestoreReport>(`/api/runs/${id}/restore`, { method: "POST", body: { targetParent } }),
   cancelRun: (id: string) => api<BackupRunSummary>(`/api/runs/${id}/cancel`, { method: "POST" }),
   deleteRun: (id: string) => api<{ ok: boolean }>(`/api/runs/${id}`, { method: "DELETE" })
 };

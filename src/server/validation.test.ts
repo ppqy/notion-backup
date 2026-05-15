@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
-import { createAdminSchema, cronForPreset, notionTokenSchema, parseBody, planMissingRequirements } from "./validation.js";
+import { createAdminSchema, cronForPreset, notionTokenSchema, parseBody, planMissingRequirements, restoreRunSchema } from "./validation.js";
 
 describe("notion token validation", () => {
   it("requires the current ntn_ token prefix", () => {
@@ -57,5 +57,11 @@ describe("plan validation", () => {
       "schedule"
     );
     expect(missing).toEqual(["请先设置有效的 Notion token", "请至少选择一个页面或数据源", "请设置时区", "请设置定时规则"]);
+  });
+});
+
+describe("restore validation", () => {
+  it("requires a target parent page input", () => {
+    expect(() => parseBody(restoreRunSchema, { targetParent: "" })).toThrow("请输入目标 Notion 父页面 URL 或 ID");
   });
 });

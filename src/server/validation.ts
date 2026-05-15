@@ -30,6 +30,10 @@ export const manualAddSchema = z.object({
   input: z.string().trim().min(1)
 });
 
+export const restoreRunSchema = z.object({
+  targetParent: z.string().trim().min(1, "请输入目标 Notion 父页面 URL 或 ID")
+});
+
 export const selectedContentSchema = z.object({
   objectId: z.string().min(1),
   objectType: z.enum(["page", "data_source"]),
@@ -51,6 +55,7 @@ export const backupPlanInputSchema = z.object({
 });
 
 export type BackupPlanInput = z.infer<typeof backupPlanInputSchema>;
+export type RestoreRunInput = z.infer<typeof restoreRunSchema>;
 
 export function parseBody<T>(schema: z.ZodSchema<T>, value: unknown): T {
   const result = schema.safeParse(value);

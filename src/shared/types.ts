@@ -128,6 +128,53 @@ export type BackupRunDetail = BackupRunSummary & {
   planSnapshot: Record<string, unknown> | null;
 };
 
+export type RestoreStatus = "running" | "succeeded" | "partial_failed" | "failed" | "canceled";
+
+export type RestoreWarning = {
+  code: string;
+  message: string;
+  objectId?: string;
+  blockId?: string;
+  details?: unknown;
+};
+
+export type RestoreItemResult = {
+  objectId: string;
+  objectType: NotionObjectType;
+  title: string;
+  status: "succeeded" | "failed" | "skipped";
+  newPageId?: string;
+  warnings: RestoreWarning[];
+  error?: string;
+};
+
+export type RestoreReport = {
+  restoreId: string;
+  sourceRunId: string;
+  sourceRunKey: string;
+  targetParentId: string;
+  status: RestoreStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  summary: {
+    createdPages: number;
+    createdBlocks: number;
+    skippedItems: number;
+    failedItems: number;
+    warningCount: number;
+  };
+  mappings: {
+    pages: Record<string, string>;
+    blocks: Record<string, string>;
+    dataSources: Record<string, string>;
+    files: Record<string, string>;
+  };
+  items: RestoreItemResult[];
+  warnings: RestoreWarning[];
+  errors: string[];
+  manifestPath: string | null;
+};
+
 export type DashboardOverview = {
   notion: NotionConnectionStatus;
   planCount: number;

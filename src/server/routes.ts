@@ -7,7 +7,16 @@ import { db } from "./db.js";
 import { acknowledgeGeneratedKey, getKeyMaterial } from "./crypto.js";
 import { changePassword, createAdmin, getUserBySessionToken, hasAdmin, login, logout, requireUser } from "./auth.js";
 import { badRequest, notFound, sendError } from "./errors.js";
-import { parseBody, backupPlanInputSchema, changePasswordSchema, createAdminSchema, loginSchema, manualAddSchema, notionTokenSchema } from "./validation.js";
+import {
+  parseBody,
+  backupPlanInputSchema,
+  changePasswordSchema,
+  createAdminSchema,
+  loginSchema,
+  manualAddSchema,
+  notionTokenSchema,
+  restoreRunSchema
+} from "./validation.js";
 import { clearConnection, getConnectionStatus, getNotionToken, listDiscoveredContent, saveConnection, upsertDiscoveredContent } from "./repositories/notionRepository.js";
 import { NotionClient, ensureSupportedObjectType } from "./notionClient.js";
 import { normalizeNotionId } from "./notionIds.js";
@@ -16,6 +25,7 @@ import { createPlan, listPlans, softDeletePlan, updatePlan } from "./repositorie
 import { BackupWorker } from "./backupWorker.js";
 import { deleteRun, getLatestRun, getRun, getRunningRuns, listRuns, requestRunCancel, updateRun } from "./repositories/runRepository.js";
 import { directorySizeBytes, generateZip } from "./storage.js";
+import { getLatestRestoreReport, restoreRunToNotion } from "./restore.js";
 
 const querySchema = z.object({
   q: z.string().optional(),
@@ -239,6 +249,24 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
   app.get("/api/runs/:id", async (request) => {
     requireUser(request);
     return getRun(getParam(request, "id"));
+  });
+
+  app.get("/api/runs/:id/restore/latest", async (request) => {
+    requireUser(request);
+    return {
+      report: await getLatestRestoreReport(getParam(request, "id"))
+    };
+  });
+
+  app.post("/api/runs/:id/restore", async (request) => {
+    requireUser(request);
+    const input = parseBody(restoreRunSchema, request.body);
+    const token = requireNotionToken();
+    return restoreRunToNotion({
+      runId: getParam(request, "id"),
+      targetParentId: normalizeNotionId(input.targetParent),
+      token
+    });
   });
 
   app.post("/api/runs/:id/cancel", async (request) => {

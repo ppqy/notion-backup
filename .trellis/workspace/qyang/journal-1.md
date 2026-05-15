@@ -178,7 +178,10 @@ Recorded JSON-first Notion backup research, future restore/import limitations, a
 
 ### Main Changes
 
-(Add details)
+- Added authenticated restore APIs for backup runs.
+- Implemented page-level JSON restore into new Notion pages with restore manifests and warnings.
+- Added restore controls/report display to the backup history detail drawer.
+- Captured restore implementation contracts in backend spec.
 
 ### Git Commits
 
@@ -188,7 +191,10 @@ Recorded JSON-first Notion backup research, future restore/import limitations, a
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -218,6 +224,40 @@ Updated Docker Compose to pull the GHCR main image by default, switched persiste
 | Hash | Message |
 |------|---------|
 | `0264498` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 7: Implement Notion restore MVP
+
+**Date**: 2026-05-15
+**Task**: Implement Notion restore MVP
+**Branch**: `main`
+
+### Summary
+
+Implemented page-level JSON restore into new Notion pages, added restore report UI/API, tests, and backend restore contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7453c72` | (see git log) |
+| `1552a3d` | (see git log) |
 
 ### Testing
 

@@ -333,7 +333,9 @@ Added first-class restore job history with preflight, progress, cancellation, an
 
 ### Main Changes
 
-(Add details)
+- Added opt-in `restoreViews` support while keeping comments and external URL import rejected.
+- Restored data source views from `views.json` after data source creation, with manifest/artifact gating, property ID remapping, and best-effort warnings.
+- Recorded `mappings.views` and `summary.createdViews`, surfaced view restore in the dashboard, and updated backend restore specs.
 
 ### Git Commits
 
@@ -345,7 +347,9 @@ Added first-class restore job history with preflight, progress, cancellation, an
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
 
 ### Status
 
@@ -441,6 +445,39 @@ Backed up Notion data source view artifacts with manifest capability gating, war
 | Hash | Message |
 |------|---------|
 | `b111cc4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 13: Restore Notion data source views
+
+**Date**: 2026-05-15
+**Task**: Restore Notion data source views
+**Branch**: `main`
+
+### Summary
+
+Implemented opt-in restore for backed-up Notion data source views with manifest/artifact gating, property ID remapping, restore metrics, UI controls, tests, and spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7499b47` | (see git log) |
 
 ### Testing
 

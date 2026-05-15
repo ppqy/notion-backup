@@ -86,6 +86,7 @@ export function createBackupRun(plan: BackupPlan, triggerType: BackupRunTrigger)
 }
 
 export function claimNextQueuedRun(): BackupRunDetail | null {
+  markUnstartedCancelRequestedRunsCanceled();
   const row = db.prepare("SELECT * FROM backup_runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1").get() as RunRow | undefined;
   if (!row) {
     return null;
@@ -231,7 +232,20 @@ export function updateRunItem(id: string, updates: Partial<Record<keyof ItemRow,
 export function requestRunCancel(id: string): BackupRunSummary {
   const run = getRun(id);
   if (!["queued", "running"].includes(run.status)) {
+    if (run.status === "cancel_requested") {
+      return mapRunRow(db.prepare("SELECT * FROM backup_runs WHERE id = ?").get(id) as RunRow);
+    }
     throw badRequest("只有排队中或运行中的备份可以取消");
+  }
+  if (run.status === "queued") {
+    updateRun(id, {
+      status: "canceled",
+      cancel_requested_at: nowIso(),
+      finished_at: nowIso(),
+      current_phase: "已取消",
+      status_message: "用户已取消，备份未开始"
+    });
+    return mapRunRow(db.prepare("SELECT * FROM backup_runs WHERE id = ?").get(id) as RunRow);
   }
   updateRun(id, {
     status: "cancel_requested",
@@ -243,7 +257,7 @@ export function requestRunCancel(id: string): BackupRunSummary {
 
 export function deleteRun(id: string): void {
   const run = getRun(id);
-  if (["queued", "running", "cancel_requested"].includes(run.status)) {
+  if (["queued", "running"].includes(run.status) || (run.status === "cancel_requested" && run.startedAt)) {
     throw badRequest("运行中或排队中的备份需要先取消后才能删除");
   }
   if (run.artifactDir && existsSync(run.artifactDir)) {
@@ -258,10 +272,40 @@ export function deleteRun(id: string): void {
 }
 
 export function getRunningRuns(): BackupRunSummary[] {
+  markUnstartedCancelRequestedRunsCanceled();
   const rows = db
     .prepare("SELECT * FROM backup_runs WHERE status IN ('queued', 'running', 'cancel_requested') ORDER BY created_at ASC")
     .all() as RunRow[];
   return rows.map(mapRunRow);
+}
+
+export function markRunItemsCanceled(runId: string, message: string): void {
+  const timestamp = nowIso();
+  db.prepare(
+    `UPDATE backup_run_items
+     SET status = 'skipped',
+         error_message = COALESCE(error_message, @message),
+         finished_at = COALESCE(finished_at, @timestamp),
+         updated_at = @timestamp
+     WHERE run_id = @runId AND status IN ('queued', 'running')`
+  ).run({
+    runId,
+    message,
+    timestamp
+  });
+}
+
+export function markUnstartedCancelRequestedRunsCanceled(): void {
+  const timestamp = nowIso();
+  db.prepare(
+    `UPDATE backup_runs
+     SET status = 'canceled',
+         status_message = COALESCE(status_message, '用户已取消，备份未开始'),
+         current_phase = '已取消',
+         finished_at = COALESCE(finished_at, @timestamp),
+         updated_at = @timestamp
+     WHERE status = 'cancel_requested' AND started_at IS NULL`
+  ).run({ timestamp });
 }
 
 export function getLatestRun(): BackupRunSummary | null {

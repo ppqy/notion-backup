@@ -11,6 +11,7 @@ import {
   createBackupRun,
   createRunItem,
   getRun,
+  markRunItemsCanceled,
   updateRun,
   updateRunItem
 } from "./repositories/runRepository.js";
@@ -40,6 +41,12 @@ type Manifest = {
   items: Array<Record<string, unknown>>;
   skippedFiles: number;
 };
+
+class BackupCanceledError extends Error {
+  constructor() {
+    super("备份已取消");
+  }
+}
 
 export class BackupWorker {
   private timer: NodeJS.Timeout | null = null;
@@ -147,7 +154,7 @@ export class BackupWorker {
         });
 
         try {
-          const result = await this.backupSelected(notion, selected, plan, runDir, seenPages, logger);
+          const result = await this.backupSelected(run.id, notion, selected, plan, runDir, seenPages, logger);
           manifest.items.push({
             objectId: selected.objectId,
             objectType: selected.objectType,
@@ -163,6 +170,9 @@ export class BackupWorker {
             finished_at: nowIso()
           });
         } catch (error) {
+          if (error instanceof BackupCanceledError) {
+            throw error;
+          }
           const message = errorMessage(error);
           manifest.partial = true;
           manifest.items.push({
@@ -202,6 +212,10 @@ export class BackupWorker {
       });
       await logger.write("info", "run_finished", { status: manifest.status });
     } catch (error) {
+      if (error instanceof BackupCanceledError) {
+        await this.finishCanceled(run.id, manifest, runDir, logger);
+        return;
+      }
       const message = errorMessage(error);
       manifest.status = "failed";
       manifest.partial = true;
@@ -220,6 +234,7 @@ export class BackupWorker {
   }
 
   private async backupSelected(
+    runId: string,
     notion: NotionClient,
     selected: SelectedContent,
     plan: BackupPlan,
@@ -227,13 +242,15 @@ export class BackupWorker {
     seenPages: Set<string>,
     logger: RunLogger
   ): Promise<Record<string, unknown>> {
+    this.ensureNotCanceled(runId);
     if (selected.objectType === "page") {
-      return this.backupPage(notion, selected.objectId, plan, runDir, seenPages, logger);
+      return this.backupPage(runId, notion, selected.objectId, plan, runDir, seenPages, logger);
     }
-    return this.backupDataSource(notion, selected.objectId, plan, runDir, seenPages, logger);
+    return this.backupDataSource(runId, notion, selected.objectId, plan, runDir, seenPages, logger);
   }
 
   private async backupDataSource(
+    runId: string,
     notion: NotionClient,
     dataSourceId: string,
     plan: BackupPlan,
@@ -241,10 +258,12 @@ export class BackupWorker {
     seenPages: Set<string>,
     logger: RunLogger
   ): Promise<Record<string, unknown>> {
+    this.ensureNotCanceled(runId);
     const dataSource = await notion.retrieveDataSource(dataSourceId);
     const entries: NotionObject[] = [];
     let startCursor: string | undefined;
     do {
+      this.ensureNotCanceled(runId);
       const response = await notion.queryDataSource(dataSourceId, startCursor);
       entries.push(...response.results);
       startCursor = response.has_more && response.next_cursor ? response.next_cursor : undefined;
@@ -254,8 +273,9 @@ export class BackupWorker {
     await writeJson(path.join(directory, "schema.json"), dataSource);
     const entryResults = [];
     for (const entry of entries) {
+      this.ensureNotCanceled(runId);
       const pageId = String(entry.id);
-      const result = await this.backupPage(notion, pageId, plan, runDir, seenPages, logger, entry);
+      const result = await this.backupPage(runId, notion, pageId, plan, runDir, seenPages, logger, entry);
       entryResults.push(result);
     }
     await writeJson(path.join(directory, "entries.json"), entries);
@@ -268,6 +288,7 @@ export class BackupWorker {
   }
 
   private async backupPage(
+    runId: string,
     notion: NotionClient,
     pageId: string,
     plan: BackupPlan,
@@ -276,6 +297,7 @@ export class BackupWorker {
     logger: RunLogger,
     knownPage?: NotionObject
   ): Promise<PageBackupResult> {
+    this.ensureNotCanceled(runId);
     if (seenPages.has(pageId)) {
       return {
         pageId,
@@ -286,9 +308,13 @@ export class BackupWorker {
     }
     seenPages.add(pageId);
     const page = knownPage ?? (await notion.retrievePage(pageId));
-    const propertyItems = await this.retrievePropertyItems(notion, pageId, page, logger);
-    const blocks = await this.retrieveBlockTree(notion, pageId);
+    this.ensureNotCanceled(runId);
+    const propertyItems = await this.retrievePropertyItems(runId, notion, pageId, page, logger);
+    this.ensureNotCanceled(runId);
+    const blocks = await this.retrieveBlockTree(runId, notion, pageId);
+    this.ensureNotCanceled(runId);
     const comments = plan.includeComments ? await safeOptional(() => notion.retrieveComments(pageId), logger, "comments_failed", pageId) : null;
+    this.ensureNotCanceled(runId);
     const markdown = await safeOptional(() => notion.retrieveMarkdown(pageId), logger, "markdown_failed", pageId);
     const pageTitle = extractTitle(page);
 
@@ -304,11 +330,13 @@ export class BackupWorker {
       await writeText(path.join(runDir, "markdown", `${pageId}.md`), extractMarkdownText(markdown));
     }
 
-    const files = await this.downloadAssetsForPage(pageId, pageArtifact, plan, runDir, logger);
+    this.ensureNotCanceled(runId);
+    const files = await this.downloadAssetsForPage(runId, pageId, pageArtifact, plan, runDir, logger);
     const childPages = findChildPages(blocks);
     if (plan.includeChildPages) {
       for (const child of childPages) {
-        await this.backupPage(notion, child.objectId, plan, runDir, seenPages, logger);
+        this.ensureNotCanceled(runId);
+        await this.backupPage(runId, notion, child.objectId, plan, runDir, seenPages, logger);
       }
     }
     return {
@@ -319,13 +347,14 @@ export class BackupWorker {
     };
   }
 
-  private async retrievePropertyItems(notion: NotionClient, pageId: string, page: NotionObject, logger: RunLogger): Promise<Record<string, unknown>> {
+  private async retrievePropertyItems(runId: string, notion: NotionClient, pageId: string, page: NotionObject, logger: RunLogger): Promise<Record<string, unknown>> {
     const properties = page.properties as Record<string, { id?: string }> | undefined;
     if (!properties) {
       return {};
     }
     const result: Record<string, unknown> = {};
     for (const [name, property] of Object.entries(properties)) {
+      this.ensureNotCanceled(runId);
       if (!property.id) {
         continue;
       }
@@ -342,15 +371,17 @@ export class BackupWorker {
     return result;
   }
 
-  private async retrieveBlockTree(notion: NotionClient, blockId: string): Promise<NotionObject[]> {
+  private async retrieveBlockTree(runId: string, notion: NotionClient, blockId: string): Promise<NotionObject[]> {
     const blocks: NotionObject[] = [];
     let startCursor: string | undefined;
     do {
+      this.ensureNotCanceled(runId);
       const response = await notion.listBlockChildren(blockId, startCursor);
       for (const block of response.results) {
+        this.ensureNotCanceled(runId);
         const hasChildren = block.has_children === true;
         if (hasChildren) {
-          block.children = await this.retrieveBlockTree(notion, String(block.id));
+          block.children = await this.retrieveBlockTree(runId, notion, String(block.id));
         }
         blocks.push(block);
       }
@@ -360,6 +391,7 @@ export class BackupWorker {
   }
 
   private async downloadAssetsForPage(
+    runId: string,
     pageId: string,
     artifact: unknown,
     plan: BackupPlan,
@@ -375,6 +407,7 @@ export class BackupWorker {
     const outputDir = path.join(runDir, "assets", pageId);
     const results: DownloadResult[] = [];
     for (const candidate of candidates) {
+      this.ensureNotCanceled(runId);
       const result = await downloadAsset(candidate, outputDir, plan.fileSizeLimitBytes);
       results.push(result);
       if (result.status === "skipped") {
@@ -393,12 +426,19 @@ export class BackupWorker {
     return getRun(runId).status === "cancel_requested";
   }
 
+  private ensureNotCanceled(runId: string): void {
+    if (this.cancelRequested(runId)) {
+      throw new BackupCanceledError();
+    }
+  }
+
   private async finishCanceled(runId: string, manifest: Manifest, runDir: string, logger: RunLogger): Promise<void> {
     manifest.status = "canceled";
     manifest.partial = true;
     manifest.finishedAt = nowIso();
     await writeJson(path.join(runDir, "manifest.json"), manifest);
     await logger.write("warn", "run_canceled", { runId });
+    markRunItemsCanceled(runId, "用户取消，未完成");
     updateRun(runId, {
       status: "canceled",
       status_message: "用户已取消，已写入的备份文件保留",

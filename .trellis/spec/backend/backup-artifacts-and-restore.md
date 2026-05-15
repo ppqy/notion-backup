@@ -243,3 +243,75 @@ properties.Status = { status: { id: oldStatusOptionId } };
 // Recreate values by stable names/options and let Notion assign new IDs.
 properties.Status = { status: { name: oldStatusOptionName } };
 ```
+
+## Scenario: Restore Run History, Preflight, and Cooperative Cancellation
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to restore job persistence, restore history APIs, restore worker behavior, restore preflight, restore cancellation, or backup cancellation semantics.
+
+### 2. Signatures
+
+* Preflight restore: `POST /api/runs/:id/restore/preflight`
+* Enqueue restore: `POST /api/runs/:id/restore`
+* List restore runs: `GET /api/restores`
+* Restore detail: `GET /api/restores/:id`
+* Cancel restore: `POST /api/restores/:id/cancel`
+* Restore DB tables: `restore_runs`, `restore_run_items`
+* Restore worker entry point: `RestoreWorker.start()`
+* Backup cancellation remains `POST /api/runs/:id/cancel`
+
+### 3. Contracts
+
+* Restore preflight validates the source backup run, manifest, target parent page access, and expected artifact presence without calling Notion write APIs.
+* Starting restore enqueues a durable `restore_runs` row and returns immediately; the HTTP request must not block on Notion content creation.
+* Restore history is a top-level dashboard workflow. Backup run detail can start a restore, but ongoing/completed jobs are monitored through `/api/restores`.
+* Restore worker claims queued restore jobs, updates progress counters, writes the normal restore manifest, and stores the manifest path on `restore_runs.manifest_path`.
+* Restore cancellation is cooperative. It stops future work at safe checkpoints, writes a canceled/partial report, and must not delete Notion content already created.
+* Backup cancellation is cooperative too. Queued backup cancellation should become terminal `canceled`; running backup cancellation should be checked during long page/data-source/block/file loops and preserve already-written artifacts.
+
+### 4. Validation & Error Matrix
+
+* Missing login -> `401 unauthorized`.
+* Missing Notion token -> `400 bad_request` before preflight/enqueue or failed restore job if the token disappears before worker execution.
+* Invalid target parent URL/ID -> `400 bad_request`.
+* Target parent not shared with integration -> `400 bad_request` with "目标父页面不可访问".
+* Missing backup artifact directory or manifest -> restore preflight/enqueue fails before creating a restore job.
+* Queued restore cancel -> terminal `canceled` and pending items become skipped.
+* Running restore cancel -> `cancel_requested` until the worker reaches a safe checkpoint, then terminal `canceled`.
+* Queued backup cancel -> terminal `canceled`; it must not remain stuck in `cancel_requested`.
+* Running backup cancel -> terminal `canceled` after the worker reaches a safe checkpoint and writes a canceled manifest.
+
+### 5. Good/Base/Bad Cases
+
+* Good: user preflights a completed backup, sees expected pages/data sources and warnings, starts a restore job, watches it progress in the "恢复" page, and can revisit the final report.
+* Base: user cancels a restore after some pages were created; the report says the restore was canceled and keeps mappings for created content.
+* Bad: `POST /api/runs/:id/restore` holds the HTTP request open until all Notion writes finish, or cancellation deletes Notion content/files without explicit user control.
+
+### 6. Tests Required
+
+* Preflight tests assert expected counts and artifact warnings without Notion writes.
+* Worker/repository tests should cover status transitions for queued, running, canceled, failed, and completed restore jobs when practical.
+* Backup cancellation changes must verify queued cancellation does not leave stale `cancel_requested` rows and running cancellation preserves partial artifacts.
+* API/shared DTO changes must pass `npm run lint`, `npm run build`, and targeted Vitest tests.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Synchronous restore hides progress and cannot be canceled once started.
+app.post("/api/runs/:id/restore", async (request) => {
+  return restoreRunToNotion({ runId: id, targetParentId, token });
+});
+```
+
+#### Correct
+
+```ts
+// Enqueue a durable restore job and let RestoreWorker update progress.
+app.post("/api/runs/:id/restore", async (request) => {
+  await preflightRestoreRun({ runId: id, targetParentId, token });
+  return createRestoreRun(getRun(id), targetParentId);
+});
+```

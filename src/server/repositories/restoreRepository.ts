@@ -4,7 +4,9 @@ import { nanoid } from "nanoid";
 import type {
   BackupRunDetail,
   PageResult,
+  RestoreOptions,
   RestoreReport,
+  RestoreReportSummary,
   RestoreRunDetail,
   RestoreRunItem,
   RestoreRunStatus,
@@ -12,6 +14,7 @@ import type {
 } from "../../shared/types.js";
 import { db } from "../db.js";
 import { badRequest, notFound } from "../errors.js";
+import { defaultRestoreOptions, normalizeRestoreReport, parseRestoreOptionsJson, parseRestoreSummaryJson } from "../restoreReport.js";
 import { nowIso } from "../time.js";
 import { getRun } from "./runRepository.js";
 
@@ -34,6 +37,8 @@ type RestoreRunRow = {
   created_pages: number;
   created_data_sources: number;
   created_blocks: number;
+  options_json: string | null;
+  summary_json: string | null;
   manifest_path: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -59,7 +64,7 @@ type RestoreItemRow = {
   updated_at: string;
 };
 
-export function createRestoreRun(sourceRun: BackupRunDetail, targetParentId: string): RestoreRunDetail {
+export function createRestoreRun(sourceRun: BackupRunDetail, targetParentId: string, options: RestoreOptions = defaultRestoreOptions()): RestoreRunDetail {
   const timestamp = nowIso();
   const row: RestoreRunRow = {
     id: nanoid(),
@@ -80,6 +85,8 @@ export function createRestoreRun(sourceRun: BackupRunDetail, targetParentId: str
     created_pages: 0,
     created_data_sources: 0,
     created_blocks: 0,
+    options_json: JSON.stringify(options),
+    summary_json: null,
     manifest_path: null,
     started_at: null,
     finished_at: null,
@@ -91,11 +98,11 @@ export function createRestoreRun(sourceRun: BackupRunDetail, targetParentId: str
     `INSERT INTO restore_runs (
       id, restore_key, source_run_id, source_run_key, target_parent_id, status, status_message, current_phase, current_item_title,
       total_items, processed_items, failed_items, skipped_items, warning_count, error_count, created_pages, created_data_sources, created_blocks,
-      manifest_path, started_at, finished_at, cancel_requested_at, created_at, updated_at
+      options_json, summary_json, manifest_path, started_at, finished_at, cancel_requested_at, created_at, updated_at
     ) VALUES (
       @id, @restore_key, @source_run_id, @source_run_key, @target_parent_id, @status, @status_message, @current_phase, @current_item_title,
       @total_items, @processed_items, @failed_items, @skipped_items, @warning_count, @error_count, @created_pages, @created_data_sources, @created_blocks,
-      @manifest_path, @started_at, @finished_at, @cancel_requested_at, @created_at, @updated_at
+      @options_json, @summary_json, @manifest_path, @started_at, @finished_at, @cancel_requested_at, @created_at, @updated_at
     )`
   );
   const insertItem = db.prepare(
@@ -291,6 +298,7 @@ export function updateRestoreRunFromReport(id: string, report: RestoreReport, st
     created_pages: report.summary.createdPages,
     created_data_sources: report.summary.createdDataSources,
     created_blocks: report.summary.createdBlocks,
+    summary_json: JSON.stringify(report.summary),
     manifest_path: report.manifestPath,
     finished_at: report.finishedAt
   });
@@ -331,7 +339,7 @@ function readRestoreReport(row: RestoreRunRow): RestoreReport | null {
     if (!existsSync(filePath)) {
       return null;
     }
-    return JSON.parse(readFileSync(filePath, "utf8")) as RestoreReport;
+    return normalizeRestoreReport(JSON.parse(readFileSync(filePath, "utf8")));
   } catch {
     return null;
   }
@@ -372,11 +380,17 @@ function mapRestoreRunRow(row: RestoreRunRow): RestoreRunSummary {
     createdPages: row.created_pages,
     createdDataSources: row.created_data_sources,
     createdBlocks: row.created_blocks,
+    options: parseRestoreOptionsJson(row.options_json),
+    summaryMetrics: parseRestoreSummary(row.summary_json),
     manifestPath: row.manifest_path,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     createdAt: row.created_at
   };
+}
+
+function parseRestoreSummary(value: string | null): RestoreReportSummary | null {
+  return parseRestoreSummaryJson(value);
 }
 
 function mapRestoreItemRow(row: RestoreItemRow): RestoreRunItem {

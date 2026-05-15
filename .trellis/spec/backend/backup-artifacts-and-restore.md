@@ -380,3 +380,180 @@ app.post("/api/runs/:id/restore", async (request) => {
   return createRestoreRun(getRun(id), targetParentId);
 });
 ```
+
+## Scenario: Versioned Manifest and Restore Model Foundation
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to backup `manifest.json`, restore enqueue payloads, restore DB schema, restore report DTOs, or readers for old restore manifests.
+* Trigger: Any future restore feature that needs capability gating or selected behavior persisted for auditability.
+
+### 2. Signatures
+
+* Current backup manifest fields: `schemaVersion`, `capabilities`, and `artifactKinds`.
+* Legacy backup manifest: missing `schemaVersion` means implicit v1.
+* Restore request body: `{ "targetParent": "<Notion page URL or ID>", "options"?: RestoreOptions }`.
+* Current `RestoreOptions`: `{ restoreComments: false, restoreViews: false, importExternalUrls: false, relationStrategy: "mapped_only" }`.
+* Restore DB fields: `restore_runs.options_json` and `restore_runs.summary_json`, both nullable.
+* Restore report fields: `options`, `summary`, and `mappings` with defaults for `pages`, `blocks`, `dataSources`, `files`, `properties`, `views`, `databases`, and `comments`.
+
+### 3. Contracts
+
+* New backup runs must write `schemaVersion`, `capabilities`, and `artifactKinds` to `manifest.json`.
+* Current backup runs must not claim `data_source_views` until view artifacts are actually backed up.
+* Legacy manifests without `schemaVersion` must remain restorable for current page/data-source/file behavior and should produce a preflight compatibility warning.
+* Restore enqueue must store normalized restore options in `restore_runs.options_json`.
+* Restore execution must write selected restore options into the restore manifest/report.
+* Restore progress/completion must store extensible summary metrics in `restore_runs.summary_json` while keeping fixed dashboard counter columns populated.
+* Restore report readers must default missing future mapping buckets to `{}` and missing numeric summary fields to `0`.
+
+### 4. Validation & Error Matrix
+
+* Restore body omits `options` -> use current default restore options.
+* Restore body sets `restoreViews`, `restoreComments`, or `importExternalUrls` to `true` before implementation -> reject with a localized `400 bad_request`.
+* Backup manifest lacks `schemaVersion` -> treat as legacy v1 and do not infer support for new artifact capabilities.
+* Backup manifest has missing or unknown `capabilities` / `artifactKinds` -> ignore unknown values and default missing arrays safely.
+* Old restore manifest lacks `options`, `mappings.properties`, `mappings.views`, or future summary counts -> readers default safely instead of crashing UI/API consumers.
+
+### 5. Good/Base/Bad Cases
+
+* Good: a new backup manifest advertises only capabilities actually written, restore enqueue stores default options, restore report includes options plus extensible mappings, and old reports still render.
+* Base: an old backup manifest without `schemaVersion` preflights with a legacy warning but can still restore supported current artifacts.
+* Bad: restore view option is accepted while no view artifacts exist, or a reader assumes `mappings.views` exists and crashes on old manifests.
+
+### 6. Tests Required
+
+* Manifest helper tests assert current schema metadata, legacy v1 defaulting, and that current runs do not claim `data_source_views`.
+* Migration tests assert `options_json` and `summary_json` are additive, nullable, and preserve existing restore rows.
+* Validation tests assert omitted options default safely and unsupported future options are rejected.
+* Restore report compatibility tests assert missing options, mappings, and summary fields default safely.
+* Full quality gate: `npm run lint`, `npm test`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Missing schemaVersion is not proof that the backup supports every new restore feature.
+if (!manifest.schemaVersion) {
+  await restoreViewsFromSchemaOnly();
+}
+```
+
+#### Correct
+
+```ts
+const manifest = readBackupManifestMetadata(manifestPath);
+if (!manifest.capabilities.includes("data_source_views")) {
+  warn("view_artifacts_missing");
+}
+```
+
+#### Wrong
+
+```ts
+// Old restore manifests may not have future mapping buckets.
+const restoredViewId = report.mappings.views[oldViewId];
+```
+
+#### Correct
+
+```ts
+const report = normalizeRestoreReport(rawReport);
+const restoredViewId = report?.mappings.views[oldViewId];
+```
+
+## Scenario: Restore Model Evolution Priority
+
+### 1. Scope / Trigger
+
+* Trigger: Any future restore feature that needs new persisted backup data, new old-to-new mappings, new restore options, or restore history metrics.
+* Trigger: Any change that would make old backup runs unable to support a new restore feature unless the artifact format is versioned first.
+
+### 2. Signatures
+
+* Backup manifest versioning fields: `schemaVersion`, `capabilities`, and `artifactKinds`.
+* Data source view artifacts: `runs/<run-key>/data-sources/<data-source-id>/views.json` or an equivalent documented view artifact path before view restore is implemented.
+* Restore run model-extension DB fields should be additive and nullable, preferably generic when the field is likely to grow:
+  * `restore_runs.options_json` for restore behavior selected at enqueue time.
+  * `restore_runs.summary_json` or `restore_runs.metrics_json` for created/skipped counts that do not justify a new column per feature.
+* Restore report mappings include future-safe buckets such as `properties`, `views`, `databases`, and `comments`.
+* Restore report future summary may include feature-specific counts such as `createdViews`, `createdComments`, `uploadedFiles`, or `uploadedBytes`.
+
+### 3. Contracts
+
+* Model-affecting restore work must be prioritized before implementation-only restore gaps to reduce later migration risk.
+* P0 model-first gaps:
+  * View-aware backup/restore. Current artifacts do not store views, so backup must capture view objects before restore can promise view recreation.
+  * Property/data-source/view ID mapping. View restore and relation repair need old-to-new mappings beyond page/block/data source/file IDs.
+  * Restore options persistence. Options such as restoring comments, restoring views, importing external URLs, or relation strategy must be stored with the restore job and manifest for auditability.
+  * Extensible restore metrics. Avoid adding a new SQLite column for every future count when a nullable JSON summary can preserve history without repeated migrations.
+* P1 model-sensitive gaps:
+  * Best-effort comment recreation can use current page `comments` artifacts for simple page comments, but thread/block/discussion-level fidelity requires validating and possibly reshaping comment artifacts before implementation.
+  * External URL import mode should use restore options and manifest warnings/mappings; it should not change existing external-file restore semantics silently.
+* P2 implementation-first gaps:
+  * Multipart uploads for files larger than 20 MiB can reuse current asset manifest `path`/`bytes` data and mostly affects Notion upload flow.
+  * File-backed page icons/covers can reuse current asset collection if a matching file object exists; missing matches should warn.
+  * Additional block/property type support should use current page JSON first and add warnings when a type still cannot be restored.
+
+### 4. Validation & Error Matrix
+
+* Restore request has feature options but `restore_runs.options_json` is absent -> reject or fall back only if the feature is explicitly documented as stateless.
+* Backup manifest lacks `schemaVersion` -> treat as legacy v1 and do not claim support for artifacts added later.
+* Backup manifest lacks the required capability for a feature, such as `data_source_views` -> preflight warning or hard failure according to the feature policy before Notion writes.
+* View restore requested but no view artifacts exist -> preflight warning/failure; do not create default views and call them restored views.
+* View artifact references a property with no old-to-new property mapping -> skip or degrade that view element and record a warning.
+* Comment restore requested but backed-up comments lack a targetable block/page/discussion reference -> skip those comments with warnings.
+* Summary or mapping fields are absent from an old restore manifest -> UI/repository readers must default missing counts to zero and missing maps to empty objects.
+
+### 5. Good/Base/Bad Cases
+
+* Good: before adding view restore, backup writes versioned view artifacts, restore records property/view mappings, preflight detects legacy runs that cannot restore views, and restore history stores selected options.
+* Base: a legacy run without `schemaVersion` can still restore pages/data sources/files, but preflight states that comments/views use only data present in the old artifact set.
+* Bad: a new restore feature reads old artifacts as if they contain views/comments/options, silently creates approximate content, and records no feature-specific mappings or selected options.
+
+### 6. Tests Required
+
+* Migration tests must verify new DB fields are additive, nullable, and preserve existing rows.
+* Artifact compatibility tests must load a legacy v1 run without `schemaVersion` and assert current restore still works with feature-specific warnings.
+* View-aware backup tests must assert view artifact paths, schema version/capability fields, and property ID references are persisted.
+* View restore tests must assert property ID remapping, missing mapping warnings, and unsupported view configuration warnings.
+* Restore options tests must assert enqueue stores options and the final restore manifest includes those options.
+* UI/repository tests must assert missing future summary/mapping fields in old manifests default safely.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// Adding one column per future count makes every restore slice a DB migration.
+ALTER TABLE restore_runs ADD COLUMN created_views INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE restore_runs ADD COLUMN created_comments INTEGER NOT NULL DEFAULT 0;
+```
+
+#### Correct
+
+```ts
+// Keep fixed columns for core dashboard metrics; put growing feature metrics in JSON.
+ALTER TABLE restore_runs ADD COLUMN options_json TEXT;
+ALTER TABLE restore_runs ADD COLUMN summary_json TEXT;
+```
+
+#### Wrong
+
+```ts
+// Current backups do not contain view artifacts.
+await restoreViewsFromDataSourceSchema(schema);
+```
+
+#### Correct
+
+```ts
+const manifest = await readRunManifest(runDir);
+if (!manifest.capabilities?.includes("data_source_views")) {
+  warn("view_artifacts_missing");
+  return;
+}
+const views = await readJson(`data-sources/${dataSourceId}/views.json`);
+await restoreViewsWithPropertyMappings(views, report.mappings.properties);
+```

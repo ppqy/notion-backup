@@ -184,25 +184,36 @@ const migrations = [
 
       CREATE INDEX IF NOT EXISTS idx_restore_run_items_restore ON restore_run_items(restore_run_id);
     `
+  },
+  {
+    id: "003_restore_model_evolution_fields",
+    sql: `
+      ALTER TABLE restore_runs ADD COLUMN options_json TEXT;
+      ALTER TABLE restore_runs ADD COLUMN summary_json TEXT;
+    `
   }
 ] as const;
 
 export function migrate(): void {
-  db.exec(`
+  applyMigrations(db);
+}
+
+export function applyMigrations(database: SqliteDatabase): void {
+  database.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
       id TEXT PRIMARY KEY,
       applied_at TEXT NOT NULL
     );
   `);
 
-  const exists = db.prepare("SELECT 1 FROM migrations WHERE id = ?").pluck();
-  const insert = db.prepare("INSERT INTO migrations (id, applied_at) VALUES (?, ?)");
-  const apply = db.transaction(() => {
+  const exists = database.prepare("SELECT 1 FROM migrations WHERE id = ?").pluck();
+  const insert = database.prepare("INSERT INTO migrations (id, applied_at) VALUES (?, ?)");
+  const apply = database.transaction(() => {
     for (const migration of migrations) {
       if (exists.get(migration.id)) {
         continue;
       }
-      db.exec(migration.sql);
+      database.exec(migration.sql);
       insert.run(migration.id, new Date().toISOString());
     }
   });

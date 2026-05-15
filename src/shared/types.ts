@@ -128,9 +128,46 @@ export type BackupRunDetail = BackupRunSummary & {
   planSnapshot: Record<string, unknown> | null;
 };
 
+export type BackupManifestCapability =
+  | "page_json"
+  | "page_blocks"
+  | "page_property_items"
+  | "page_comments"
+  | "data_source_json"
+  | "data_source_entries"
+  | "markdown"
+  | "local_file_assets"
+  | "external_file_assets"
+  | "data_source_views";
+
+export type BackupArtifactKind =
+  | "manifest"
+  | "logs"
+  | "page_json"
+  | "data_source_schema"
+  | "data_source_entries"
+  | "data_source_views"
+  | "markdown"
+  | "asset_manifest"
+  | "asset_file";
+
+export type BackupManifestMetadata = {
+  schemaVersion: number;
+  capabilities: BackupManifestCapability[];
+  artifactKinds: BackupArtifactKind[];
+  legacy: boolean;
+};
+
 export type RestoreStatus = "running" | "succeeded" | "partial_failed" | "failed" | "canceled";
 
 export type RestoreRunStatus = "queued" | "running" | "cancel_requested" | RestoreStatus;
+
+export type RestoreOptions = {
+  restoreComments: boolean;
+  restoreViews: boolean;
+  importExternalUrls: boolean;
+  relationStrategy: "mapped_only";
+};
 
 export type RestoreWarning = {
   code: string;
@@ -151,28 +188,38 @@ export type RestoreItemResult = {
   error?: string;
 };
 
+export type RestoreReportSummary = {
+  createdPages: number;
+  createdDataSources: number;
+  createdBlocks: number;
+  skippedItems: number;
+  failedItems: number;
+  warningCount: number;
+  [metric: string]: number;
+};
+
+export type RestoreReportMappings = {
+  pages: Record<string, string>;
+  blocks: Record<string, string>;
+  dataSources: Record<string, string>;
+  files: Record<string, string>;
+  properties: Record<string, string>;
+  views: Record<string, string>;
+  databases: Record<string, string>;
+  comments: Record<string, string>;
+};
+
 export type RestoreReport = {
   restoreId: string;
   sourceRunId: string;
   sourceRunKey: string;
   targetParentId: string;
+  options: RestoreOptions;
   status: RestoreStatus;
   startedAt: string;
   finishedAt: string | null;
-  summary: {
-    createdPages: number;
-    createdDataSources: number;
-    createdBlocks: number;
-    skippedItems: number;
-    failedItems: number;
-    warningCount: number;
-  };
-  mappings: {
-    pages: Record<string, string>;
-    blocks: Record<string, string>;
-    dataSources: Record<string, string>;
-    files: Record<string, string>;
-  };
+  summary: RestoreReportSummary;
+  mappings: RestoreReportMappings;
   items: RestoreItemResult[];
   warnings: RestoreWarning[];
   errors: string[];
@@ -198,6 +245,8 @@ export type RestoreRunSummary = {
   createdPages: number;
   createdDataSources: number;
   createdBlocks: number;
+  options: RestoreOptions;
+  summaryMetrics: RestoreReportSummary | null;
   manifestPath: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -232,6 +281,8 @@ export type RestorePreflight = {
   skippedItems: number;
   pages: number;
   dataSources: number;
+  options: RestoreOptions;
+  backupManifest: BackupManifestMetadata;
   warnings: RestoreWarning[];
 };
 

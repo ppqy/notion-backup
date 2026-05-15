@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { BackupPlan, BackupRunDetail, NotionObjectType, SelectedContent } from "../shared/types.js";
 import { collectAssets, downloadAsset, type DownloadResult } from "./assets.js";
+import { backupManifestMetadataForPlan } from "./backupManifest.js";
 import { config } from "./config.js";
 import { getNotionToken } from "./repositories/notionRepository.js";
 import { duePlans, getPlan, setPlanNextRun, validateForManualRun } from "./repositories/planRepository.js";
@@ -31,6 +32,9 @@ type PageBackupResult = {
 };
 
 type Manifest = {
+  schemaVersion: number;
+  capabilities: string[];
+  artifactKinds: string[];
   runId: string;
   runKey: string;
   status: string;
@@ -119,6 +123,7 @@ export class BackupWorker {
       void logger.write("warn", "notion_retry", event);
     });
     const manifest: Manifest = {
+      ...backupManifestMetadataForPlan(plan),
       runId: run.id,
       runKey: run.runKey,
       status: "running",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
+import { DEFAULT_RESTORE_OPTIONS, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
 import { createAdminSchema, cronForPreset, notionTokenSchema, parseBody, planMissingRequirements, restoreRunSchema } from "./validation.js";
 
 describe("notion token validation", () => {
@@ -63,5 +63,13 @@ describe("plan validation", () => {
 describe("restore validation", () => {
   it("requires a target parent page input", () => {
     expect(() => parseBody(restoreRunSchema, { targetParent: "" })).toThrow("请输入目标 Notion 父页面 URL 或 ID");
+  });
+
+  it("defaults restore options for the current target-parent-only API body", () => {
+    expect(parseBody(restoreRunSchema, { targetParent: "target-parent" }).options).toEqual(DEFAULT_RESTORE_OPTIONS);
+  });
+
+  it("rejects future restore options that are not implemented yet", () => {
+    expect(() => parseBody(restoreRunSchema, { targetParent: "target-parent", options: { restoreViews: true } })).toThrow("暂不支持恢复视图");
   });
 });

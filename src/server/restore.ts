@@ -2,12 +2,14 @@ import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestorePreflight, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
+import type { BackupRunDetail, BackupRunItem, NotionObjectType, RestoreOptions, RestorePreflight, RestoreReport, RestoreStatus, RestoreWarning } from "../shared/types.js";
 import type { DownloadResult } from "./assets.js";
+import { normalizeBackupManifest, readBackupManifestMetadata } from "./backupManifest.js";
 import { badRequest, notFound } from "./errors.js";
 import { NotionApiError, NotionClient, type NotionObject } from "./notionClient.js";
 import { extractTitle } from "./repositories/notionRepository.js";
 import { getRun } from "./repositories/runRepository.js";
+import { defaultRestoreOptions, defaultRestoreReportMappings, defaultRestoreReportSummary, normalizeRestoreReport } from "./restoreReport.js";
 import { writeJson } from "./storage.js";
 import { nowIso } from "./time.js";
 
@@ -89,11 +91,11 @@ const SINGLE_PART_FILE_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 const READ_ONLY_PAGE_PROPERTY_TYPES = new Set(["created_by", "created_time", "last_edited_by", "last_edited_time", "formula", "rollup", "unique_id", "verification"]);
 const UNSUPPORTED_SCHEMA_PROPERTY_TYPES = new Set(["relation", "rollup", "formula", "button", "location", "verification", "last_visited_time"]);
 
-export async function restoreRunToNotion(input: { runId: string; targetParentId: string; token: string }): Promise<RestoreReport> {
+export async function restoreRunToNotion(input: { runId: string; targetParentId: string; token: string; options?: RestoreOptions }): Promise<RestoreReport> {
   return executeRestoreToNotion(input);
 }
 
-export async function executeRestoreToNotion(input: { runId: string; targetParentId: string; token: string; hooks?: RestoreExecutionHooks }): Promise<RestoreReport> {
+export async function executeRestoreToNotion(input: { runId: string; targetParentId: string; token: string; options?: RestoreOptions; hooks?: RestoreExecutionHooks }): Promise<RestoreReport> {
   const run = getRun(input.runId);
   await validateRestorePreflight(run);
   const runDir = run.artifactDir;
@@ -105,7 +107,7 @@ export async function executeRestoreToNotion(input: { runId: string; targetParen
   await validateRestoreTarget(notion, input.targetParentId);
 
   const restoreId = input.hooks?.restoreId ?? `${nowIso().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z")}_${nanoid(6)}`;
-  const report = createInitialReport(restoreId, run.id, run.runKey, input.targetParentId);
+  const report = createInitialReport(restoreId, run.id, run.runKey, input.targetParentId, input.options ?? defaultRestoreOptions());
   const context: RestoreContext = {
     notion,
     runDir,
@@ -202,7 +204,7 @@ export async function executeRestoreToNotion(input: { runId: string; targetParen
   return report;
 }
 
-export async function preflightRestoreRun(input: { runId: string; targetParentId: string; token: string }): Promise<RestorePreflight> {
+export async function preflightRestoreRun(input: { runId: string; targetParentId: string; token: string; options?: RestoreOptions }): Promise<RestorePreflight> {
   const run = getRun(input.runId);
   await validateRestorePreflight(run);
   const runDir = run.artifactDir;
@@ -211,12 +213,20 @@ export async function preflightRestoreRun(input: { runId: string; targetParentId
   }
   const notion = new NotionClient(input.token);
   await validateRestoreTarget(notion, input.targetParentId);
-  return summarizeRestorePreflight(run, input.targetParentId);
+  return summarizeRestorePreflight(run, input.targetParentId, input.options ?? defaultRestoreOptions());
 }
 
-export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "runKey" | "artifactDir" | "items">, targetParentId: string): RestorePreflight {
+export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "runKey" | "artifactDir" | "items">, targetParentId: string, options: RestoreOptions = defaultRestoreOptions()): RestorePreflight {
   const runDir = run.artifactDir ?? "";
+  const backupManifestPath = runDir ? path.join(runDir, "manifest.json") : "";
+  const backupManifest = backupManifestPath && existsSync(backupManifestPath) ? readBackupManifestMetadata(backupManifestPath) : normalizeBackupManifest({});
   const warnings: RestoreWarning[] = [];
+  if (backupManifest.legacy) {
+    warnings.push({
+      code: "backup_manifest_legacy_v1",
+      message: "备份 manifest 未包含 schemaVersion，按旧版 v1 artifact 兼容恢复；视图等新能力不会被假定可用"
+    });
+  }
   let pages = 0;
   let dataSources = 0;
   let restorableItems = 0;
@@ -272,6 +282,8 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
     skippedItems,
     pages,
     dataSources,
+    options,
+    backupManifest,
     warnings
   };
 }
@@ -287,9 +299,11 @@ export async function validateRestorePreflight(run: Pick<BackupRunDetail, "artif
   if (!existsSync(backupManifest)) {
     throw notFound("manifest 不存在，无法恢复");
   }
-  await readJson<unknown>(backupManifest).catch(() => {
+  try {
+    readBackupManifestMetadata(backupManifest);
+  } catch {
     throw badRequest("manifest 格式无效，无法恢复");
-  });
+  }
   if (!run.items.some((item) => item.status === "succeeded")) {
     throw badRequest("没有可恢复的成功备份项目");
   }
@@ -304,7 +318,8 @@ export async function getLatestRestoreReport(runId: string): Promise<RestoreRepo
   if (!existsSync(latestPath)) {
     return null;
   }
-  return readJson<RestoreReport>(latestPath).catch(() => null);
+  const report = await readJson<unknown>(latestPath).catch(() => null);
+  return normalizeRestoreReport(report);
 }
 
 async function restoreDataSourceArtifact(context: RestoreContext, dataSourceId: string, targetParentId: string, fallbackTitle?: string): Promise<string> {
@@ -683,29 +698,18 @@ export function convertBlockForRestore(block: NotionObject, options: { fileResol
   }
 }
 
-function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKey: string, targetParentId: string): RestoreReport {
+function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKey: string, targetParentId: string, options: RestoreOptions): RestoreReport {
   return {
     restoreId,
     sourceRunId,
     sourceRunKey,
     targetParentId,
+    options,
     status: "running",
     startedAt: nowIso(),
     finishedAt: null,
-    summary: {
-      createdPages: 0,
-      createdDataSources: 0,
-      createdBlocks: 0,
-      skippedItems: 0,
-      failedItems: 0,
-      warningCount: 0
-    },
-    mappings: {
-      pages: {},
-      blocks: {},
-      dataSources: {},
-      files: {}
-    },
+    summary: defaultRestoreReportSummary(),
+    mappings: defaultRestoreReportMappings(),
     items: [],
     warnings: [],
     errors: [],

@@ -61,6 +61,7 @@ export class RestoreWorker {
         runId: sourceRun.id,
         targetParentId: restore.targetParentId,
         token,
+        options: restore.options,
         hooks: {
           restoreId: restore.restoreKey,
           shouldCancel: () => restoreCancelRequested(restoreRunId),
@@ -106,7 +107,8 @@ export class RestoreWorker {
               error_count: report.errors.length,
               created_pages: report.summary.createdPages,
               created_data_sources: report.summary.createdDataSources,
-              created_blocks: report.summary.createdBlocks
+              created_blocks: report.summary.createdBlocks,
+              summary_json: JSON.stringify(report.summary)
             });
           }
         }

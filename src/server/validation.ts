@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
+import { ADMIN_USERNAME_MIN_LENGTH, DEFAULT_RESTORE_OPTIONS, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants.js";
 import type { SchedulePreset, SelectedContent } from "../shared/types.js";
 import { badRequest } from "./errors.js";
 
@@ -30,8 +30,41 @@ export const manualAddSchema = z.object({
   input: z.string().trim().min(1)
 });
 
+export const restoreOptionsSchema = z
+  .object({
+    restoreComments: z.boolean().default(DEFAULT_RESTORE_OPTIONS.restoreComments),
+    restoreViews: z.boolean().default(DEFAULT_RESTORE_OPTIONS.restoreViews),
+    importExternalUrls: z.boolean().default(DEFAULT_RESTORE_OPTIONS.importExternalUrls),
+    relationStrategy: z.literal(DEFAULT_RESTORE_OPTIONS.relationStrategy).default(DEFAULT_RESTORE_OPTIONS.relationStrategy)
+  })
+  .strict()
+  .superRefine((options, context) => {
+    if (options.restoreComments) {
+      context.addIssue({
+        code: "custom",
+        path: ["restoreComments"],
+        message: "暂不支持恢复评论"
+      });
+    }
+    if (options.restoreViews) {
+      context.addIssue({
+        code: "custom",
+        path: ["restoreViews"],
+        message: "暂不支持恢复视图"
+      });
+    }
+    if (options.importExternalUrls) {
+      context.addIssue({
+        code: "custom",
+        path: ["importExternalUrls"],
+        message: "暂不支持导入外部 URL 文件"
+      });
+    }
+  });
+
 export const restoreRunSchema = z.object({
-  targetParent: z.string().trim().min(1, "请输入目标 Notion 父页面 URL 或 ID")
+  targetParent: z.string().trim().min(1, "请输入目标 Notion 父页面 URL 或 ID"),
+  options: restoreOptionsSchema.default(DEFAULT_RESTORE_OPTIONS)
 });
 
 export const selectedContentSchema = z.object({

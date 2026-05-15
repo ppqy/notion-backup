@@ -273,6 +273,7 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
     return preflightRestoreRun({
       runId: getParam(request, "id"),
       targetParentId: normalizeNotionId(input.targetParent),
+      options: input.options,
       token
     });
   });
@@ -285,9 +286,10 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
     await preflightRestoreRun({
       runId: getParam(request, "id"),
       targetParentId,
+      options: input.options,
       token
     });
-    return createRestoreRun(getRun(getParam(request, "id")), targetParentId);
+    return createRestoreRun(getRun(getParam(request, "id")), targetParentId, input.options);
   });
 
   app.get("/api/restores", async (request) => {

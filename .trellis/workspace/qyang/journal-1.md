@@ -490,3 +490,36 @@ Implemented opt-in restore for backed-up Notion data source views with manifest/
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Restore backed-up Notion comments
+
+**Date**: 2026-05-15
+**Task**: Restore backed-up Notion comments
+**Branch**: `main`
+
+### Summary
+
+Implemented best-effort Notion comment restore, surfaced comment permission diagnostics for backup and restore, and updated restore artifact contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0bb99d1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~488 | Active |
+| `journal-1.md` | ~525 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-05-15 | Restore backed-up Notion comments | `0bb99d1` | `main` |
 | 13 | 2026-05-15 | Restore Notion data source views | `7499b47` | `main` |
 | 12 | 2026-05-15 | Restore data source view artifacts | `b111cc4` | `main` |
 | 11 | 2026-05-15 | Restore model evolution foundation | `0464ac8` | `main` |

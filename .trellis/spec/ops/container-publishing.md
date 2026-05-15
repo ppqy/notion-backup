@@ -13,6 +13,8 @@
 - Registry: `ghcr.io`
 - Image name expression: `${{ github.repository }}`
 - Default image path: `ghcr.io/ppqy/notion-backup`
+- Default Compose image while release tags are absent: `ghcr.io/ppqy/notion-backup:main`
+- Default Compose persistence mount: `./data:/data`
 - Required workflow permissions:
   - `contents: read`
   - `packages: write` for publishing to GHCR
@@ -25,6 +27,8 @@
 - Git tags matching `v*.*.*` must publish version tags plus `latest`.
 - Runtime secrets such as `APP_ENCRYPTION_KEY`, Notion tokens, session cookies, and database files must never be copied into the Docker image.
 - Persistent app data must remain under `/data` and be provided by a Docker volume or host mount at runtime.
+- The default `docker-compose.yml` is deployment-first: it must pull `ghcr.io/ppqy/notion-backup:main` instead of building locally until release tags are available.
+- The default `docker-compose.yml` must bind mount `./data` to `/data` so backup data is visible to host backup tools.
 
 ### 4. Validation & Error Matrix
 
@@ -37,7 +41,9 @@
 ### 5. Good/Base/Bad Cases
 
 - Good: PRs run lint, build, tests, and Docker build with `push: false`.
+- Good: Default Compose pulls `ghcr.io/ppqy/notion-backup:main` and mounts `./data:/data`.
 - Base: `main` publishes `main` and `sha-<short-sha>` using `GITHUB_TOKEN`.
+- Bad: Default Compose uses `build: .` or a named volume while README says backup data is stored under `./data`.
 - Bad: Workflow stores a registry password in plain text or pushes `latest` on every branch build.
 
 ### 6. Tests Required
@@ -46,6 +52,7 @@
 - Run `npm run build` to verify the production app build that the Docker image depends on.
 - Run `npm test` before publishing workflows that can push images.
 - Parse workflow YAML locally when editing the workflow.
+- Run `docker compose config` after changing `docker-compose.yml`.
 
 ### 7. Wrong vs Correct
 

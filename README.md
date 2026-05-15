@@ -8,7 +8,7 @@ Languages: English | [简体中文](README_CN.md)
 
 Self-hosted Notion backup dashboard for selecting pages and data sources, running manual or scheduled backups, and storing backup metadata locally in SQLite.
 
-The product UI is Chinese-first. The runtime is a single Fastify server that serves the React dashboard, owns the API, runs the backup worker, and writes artifacts to local disk or a Docker volume.
+The product UI is Chinese-first. The runtime is a single Fastify server that serves the React dashboard, owns the API, runs the backup worker, and writes artifacts to local disk or a mounted Docker data directory.
 
 ## Table of Contents
 
@@ -62,7 +62,7 @@ You also need a Notion internal integration token that starts with `ntn_`, and t
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open `http://localhost:3000` and complete the setup flow:
@@ -78,7 +78,7 @@ Stop the container:
 docker compose down
 ```
 
-The Compose setup stores application data in the `notion-backup-data` volume mounted at `/data`.
+The Compose setup mounts `./data` on the host to `/data` in the container, so application data stays directly visible under the local `data/` directory.
 
 ## Published Docker Images
 
@@ -89,12 +89,12 @@ GitHub Actions publishes Docker images to GitHub Container Registry from `.githu
 - Git tags matching `v*.*.*` publish the tag name, semantic version tags, `latest`, and `sha-<short-sha>`.
 - Manual runs are available from the workflow dispatch button in GitHub Actions.
 
-To deploy a published image, replace the local Compose build with an image reference:
+The default Compose file uses the moving `main` image until release tags are available:
 
 ```yaml
 services:
   notion-backup:
-    image: ghcr.io/ppqy/notion-backup:latest
+    image: ghcr.io/ppqy/notion-backup:main
 ```
 
 If the GHCR package remains private, log in before pulling:
@@ -159,7 +159,7 @@ Only content that the integration can access can be backed up.
 
 ## Backup Data
 
-Docker stores these files under the `/data` volume. Local development stores the same layout under `./data` by default.
+Docker Compose stores these files under the host-mounted `./data` directory, which is mounted to `/data` in the container. Local development stores the same layout under `./data` by default.
 
 ```text
 data/
@@ -234,7 +234,7 @@ It checks database connectivity and returns the current server time.
 ## Security Notes
 
 - Keep `APP_ENCRYPTION_KEY` or `data/app-secret.json` with the database backup. If the encryption key is lost, the stored Notion token cannot be decrypted and must be entered again.
-- Protect the Docker volume or `./data` directory. It contains the SQLite database, encrypted token, run metadata, and backup artifacts.
+- Protect the `./data` directory or whichever host path you bind mount to `/data`. It contains the SQLite database, encrypted token, run metadata, and backup artifacts.
 - Set `SESSION_SECURE=true` behind HTTPS.
 - This app is designed for self-hosted single-admin use. Put it behind your own reverse proxy, VPN, or access controls before exposing it outside a trusted network.
 - Backups are limited to content accessible to the configured Notion integration; this is not a full workspace export.

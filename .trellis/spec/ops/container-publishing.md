@@ -25,6 +25,7 @@
 - Pull requests to `main` must build without pushing an image.
 - Pushes to `main` must publish a moving `main` tag and an immutable `sha-<short-sha>` tag.
 - Git tags matching `v*.*.*` must publish version tags plus `latest`.
+- Published images must include `linux/amd64` and `linux/arm64` manifests so the default Compose file works on x86 servers and ARM hosts such as Apple Silicon machines.
 - Runtime secrets such as `APP_ENCRYPTION_KEY`, Notion tokens, session cookies, and database files must never be copied into the Docker image.
 - Persistent app data must remain under `/data` and be provided by a Docker volume or host mount at runtime.
 - The default `docker-compose.yml` is deployment-first: it must pull `ghcr.io/ppqy/notion-backup:main` instead of building locally until release tags are available.
@@ -37,12 +38,15 @@
 - Login runs on pull requests from forks -> avoid by gating registry login and image push to non-PR events.
 - `.env`, `data/`, or local build output enters the Docker context -> fix `.dockerignore`.
 - A published image fails `npm run build` -> block the publish job until lint/build/test pass.
+- ARM hosts fail with `no matching manifest for linux/arm64/v8` -> publish both `linux/amd64` and `linux/arm64` and keep QEMU setup before Buildx.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: PRs run lint, build, tests, and Docker build with `push: false`.
 - Good: Default Compose pulls `ghcr.io/ppqy/notion-backup:main` and mounts `./data:/data`.
+- Good: Docker Buildx builds `linux/amd64,linux/arm64` after `docker/setup-qemu-action`.
 - Base: `main` publishes `main` and `sha-<short-sha>` using `GITHUB_TOKEN`.
+- Bad: Published `main` only contains `linux/amd64`, which breaks Apple Silicon pulls.
 - Bad: Default Compose uses `build: .` or a named volume while README says backup data is stored under `./data`.
 - Bad: Workflow stores a registry password in plain text or pushes `latest` on every branch build.
 

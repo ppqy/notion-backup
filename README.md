@@ -87,6 +87,7 @@ GitHub Actions publishes Docker images to GitHub Container Registry from `.githu
 - Pull requests to `main` run quality checks and build the Docker image without pushing it.
 - Pushes to `main` publish `ghcr.io/ppqy/notion-backup:main` and `sha-<short-sha>`.
 - Git tags matching `v*.*.*` publish the tag name, semantic version tags, `latest`, and `sha-<short-sha>`.
+- Published images support `linux/amd64` and `linux/arm64`.
 - Manual runs are available from the workflow dispatch button in GitHub Actions.
 
 The default Compose file uses the moving `main` image until release tags are available:

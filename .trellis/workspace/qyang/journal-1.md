@@ -217,7 +217,10 @@ Updated Docker Compose to pull the GHCR main image by default, switched persiste
 
 ### Main Changes
 
-(Add details)
+- Added Notion File Upload support to restore downloaded backup assets.
+- Restored downloaded Notion-hosted media blocks and file properties as `file_upload` values while preserving external URLs.
+- Preserved Unicode filenames during upload and recorded file upload mappings/warnings in restore reports.
+- Updated the backend restore contract for downloaded file restore behavior.
 
 ### Git Commits
 
@@ -227,7 +230,10 @@ Updated Docker Compose to pull the GHCR main image by default, switched persiste
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -327,6 +333,39 @@ Added first-class restore job history with preflight, progress, cancellation, an
 | `ec800ee` | (see git log) |
 | `f5aadc2` | (see git log) |
 | `7e5c42d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 10: Restore backed-up file uploads
+
+**Date**: 2026-05-15
+**Task**: Restore backed-up file uploads
+**Branch**: `main`
+
+### Summary
+
+Implemented restore of downloaded Notion/local files through Notion File Uploads, preserved Unicode filenames, updated restore contracts, and verified lint/tests/build.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7f07862` | (see git log) |
 
 ### Testing
 

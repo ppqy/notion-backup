@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
-- **Last Active**: 2026-05-14
+- **Total Sessions**: 5
+- **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~153 | Active |
+| `journal-1.md` | ~192 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-05-15 | Record Notion JSON backup restore research | `e6758a8` | `main` |
 | 4 | 2026-05-14 | Publish Docker image to GHCR | `f0cb254` | `main` |
 | 3 | 2026-05-14 | Complete bootstrap guidelines and README | `2ea5ae5`, `6fa1b14` | `main` |
 | 2 | 2026-05-14 | Setup UI regression fixes | `3ac349e`, `57dad45` | `main` |

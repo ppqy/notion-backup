@@ -157,3 +157,36 @@ Added a GitHub Actions workflow to build and publish the Docker image to GHCR, d
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Record Notion JSON backup restore research
+
+**Date**: 2026-05-15
+**Task**: Record Notion JSON backup restore research
+**Branch**: `main`
+
+### Summary
+
+Recorded JSON-first Notion backup research, future restore/import limitations, and backend artifact contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e6758a8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

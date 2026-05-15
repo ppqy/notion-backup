@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  collectPageCommentsArtifact,
   collectDataSourceViewsArtifact,
   DATA_SOURCE_VIEWS_ARTIFACT_FILENAME,
   writeDataSourceViewsArtifact
 } from "./backupWorker.js";
+import { NotionApiError } from "./notionClient.js";
 
 describe("data source view backup artifacts", () => {
   it("paginates view references, retrieves full views, and writes views.json", async () => {
@@ -146,5 +148,47 @@ describe("data source view backup artifacts", () => {
 
     expect(notion.listDataSourceViews).not.toHaveBeenCalled();
     expect(logger.write).not.toHaveBeenCalled();
+  });
+});
+
+describe("page comment backup artifacts", () => {
+  it("records a readable permission warning when comments cannot be read", async () => {
+    const notion = {
+      retrieveComments: vi.fn(async () => {
+        throw new NotionApiError(403, "restricted_resource", "Insufficient permissions for this endpoint.");
+      })
+    };
+    const logger = { write: vi.fn(async () => undefined) };
+
+    const artifact = await collectPageCommentsArtifact({
+      pageId: "page-1",
+      notion,
+      logger
+    });
+
+    expect(artifact).toEqual({
+      object: "page_comments",
+      status: "failed",
+      pageId: "page-1",
+      results: [],
+      warnings: [
+        {
+          code: "comments_read_permission_missing",
+          message: "Notion token 缺少 Read comments 权限，无法备份该页面评论；请在 Notion integration 中启用后重新备份",
+          details: {
+            pageId: "page-1",
+            status: 403
+          }
+        }
+      ]
+    });
+    expect(logger.write).toHaveBeenCalledWith(
+      "warn",
+      "comments_failed",
+      expect.objectContaining({
+        pageId: "page-1",
+        code: "comments_read_permission_missing"
+      })
+    );
   });
 });

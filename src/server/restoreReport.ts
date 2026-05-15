@@ -11,6 +11,7 @@ export function defaultRestoreReportSummary(overrides: Partial<RestoreReportSumm
     createdDataSources: 0,
     createdBlocks: 0,
     createdViews: 0,
+    createdComments: 0,
     skippedItems: 0,
     failedItems: 0,
     warningCount: 0,

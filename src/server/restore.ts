@@ -72,6 +72,12 @@ export type ViewRestoreConversion = {
   warnings: RestoreWarning[];
 };
 
+export type CommentRestoreConversion = {
+  oldCommentId: string | null;
+  request: NotionObject | null;
+  warnings: RestoreWarning[];
+};
+
 type RestoreContext = {
   notion: NotionClient;
   runDir: string;
@@ -273,6 +279,8 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
           message: `页面备份文件不存在，恢复时会失败：${item.title}`,
           objectId: item.objectId
         });
+      } else if (options.restoreComments) {
+        warnings.push(...commentPreflightWarningsForPage(runDir, item.objectId, item.title));
       }
       continue;
     }
@@ -290,6 +298,8 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
         message: `数据源 entries 备份文件不存在，恢复时会失败：${item.title}`,
         objectId: item.objectId
       });
+    } else if (options.restoreComments) {
+      warnings.push(...commentPreflightWarningsForDataSource(runDir, item.objectId, item.title));
     }
     if (options.restoreViews) {
       const artifact = readDataSourceViewsArtifactSync(runDir, item.objectId);
@@ -494,7 +504,7 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, pare
   try {
     const artifact = await readPageArtifact(context.runDir, pageId);
     const pageWarnings =
-      parent.type === "page_id" ? collectPageArtifactRestoreWarnings(artifact, pageId) : collectPageCommentsRestoreWarnings(artifact, pageId);
+      parent.type === "page_id" ? collectPageArtifactRestoreWarnings(artifact, pageId, context.report.options) : collectPageCommentsRestoreWarnings(artifact, pageId, context.report.options);
     for (const warning of pageWarnings) {
       addWarning(context.report, warning);
     }
@@ -509,6 +519,9 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, pare
     context.report.mappings.pages[pageId] = restoredPageId;
     context.report.summary.createdPages += 1;
     await appendBlocks(context, restoredPageId, artifact.blocks, pageId);
+    if (context.report.options.restoreComments) {
+      await restorePageComments(context, pageId, artifact);
+    }
     return restoredPageId;
   } finally {
     context.restoringPages.delete(pageId);
@@ -628,6 +641,175 @@ async function appendReturnedChildren(
       await appendBlocks(context, newBlockId, entry.childBlocks, sourcePageId);
     }
   }
+}
+
+async function restorePageComments(context: RestoreContext, sourcePageId: string, artifact: PageArtifact): Promise<void> {
+  if (!hasBackedUpComments(artifact.comments)) {
+    return;
+  }
+  const comments = extractBackedUpComments(artifact.comments);
+  if (comments.length === 0) {
+    addWarning(context.report, {
+      code: "page_comments_unsupported",
+      message: "页面评论备份格式无法识别，已跳过评论恢复",
+      objectId: sourcePageId
+    });
+    return;
+  }
+  for (const comment of comments) {
+    assertRestoreNotCanceled(context);
+    const conversion = convertCommentForRestore(comment, {
+      pageMappings: context.report.mappings.pages,
+      blockMappings: context.report.mappings.blocks,
+      fallbackSourcePageId: sourcePageId
+    });
+    for (const warning of conversion.warnings) {
+      addWarning(context.report, {
+        ...warning,
+        objectId: warning.objectId || sourcePageId
+      });
+    }
+    if (!conversion.request) {
+      continue;
+    }
+    try {
+      const created = await context.notion.createComment(conversion.request);
+      const newCommentId = readNotionObjectId(created);
+      if (conversion.oldCommentId && newCommentId) {
+        context.report.mappings.comments[conversion.oldCommentId] = newCommentId;
+      }
+      if (newCommentId) {
+        context.report.summary.createdComments = (context.report.summary.createdComments ?? 0) + 1;
+      } else {
+        addWarning(context.report, {
+          code: "comment_mapping_missing",
+          message: "Notion 未返回新评论 ID，无法记录评论映射",
+          objectId: sourcePageId,
+          details: conversion.oldCommentId ? { commentId: conversion.oldCommentId } : undefined
+        });
+      }
+    } catch (error) {
+      addWarning(context.report, commentCreateFailureWarning(error, sourcePageId, conversion.oldCommentId));
+    }
+  }
+}
+
+export function convertCommentForRestore(
+  comment: NotionObject,
+  input: { pageMappings: Record<string, string>; blockMappings: Record<string, string>; fallbackSourcePageId?: string }
+): CommentRestoreConversion {
+  const warnings: RestoreWarning[] = [];
+  const oldCommentId = readNotionObjectId(comment);
+  const parent = convertCommentParentForRestore(comment.parent, input, warnings, oldCommentId);
+  const richText = sanitizeRichTextArray(comment.rich_text, warnings);
+  if (Array.isArray(comment.attachments) && comment.attachments.length > 0) {
+    warnings.push({
+      code: "comment_attachments_skipped",
+      message: "评论附件恢复尚未实现；已只恢复评论文本",
+      details: oldCommentId ? { commentId: oldCommentId } : undefined
+    });
+  }
+  if (!parent || richText.length === 0) {
+    if (richText.length === 0) {
+      warnings.push({
+        code: "comment_rich_text_missing",
+        message: "评论缺少可恢复的文本内容，已跳过",
+        details: oldCommentId ? { commentId: oldCommentId } : undefined
+      });
+    }
+    return {
+      oldCommentId,
+      request: null,
+      warnings
+    };
+  }
+  return {
+    oldCommentId,
+    request: {
+      parent,
+      rich_text: richText
+    },
+    warnings
+  };
+}
+
+function convertCommentParentForRestore(
+  rawParent: unknown,
+  input: { pageMappings: Record<string, string>; blockMappings: Record<string, string>; fallbackSourcePageId?: string },
+  warnings: RestoreWarning[],
+  oldCommentId: string | null
+): NotionObject | null {
+  if (isRecord(rawParent)) {
+    if (rawParent.type === "page_id" && typeof rawParent.page_id === "string") {
+      const mapped = input.pageMappings[rawParent.page_id];
+      if (mapped) {
+        return {
+          type: "page_id",
+          page_id: mapped
+        };
+      }
+      warnings.push(commentWarning("comment_target_unmapped", "评论所属页面没有在本次恢复中映射，已跳过", oldCommentId, { pageId: rawParent.page_id }));
+      return null;
+    }
+    if (rawParent.type === "block_id" && typeof rawParent.block_id === "string") {
+      const mappedBlock = input.blockMappings[rawParent.block_id];
+      if (mappedBlock) {
+        return {
+          type: "block_id",
+          block_id: mappedBlock
+        };
+      }
+      const mappedPage = input.pageMappings[rawParent.block_id];
+      if (mappedPage) {
+        return {
+          type: "page_id",
+          page_id: mappedPage
+        };
+      }
+      warnings.push(commentWarning("comment_target_unmapped", "评论所属区块没有在本次恢复中映射，已跳过", oldCommentId, { blockId: rawParent.block_id }));
+      return null;
+    }
+  }
+  if (input.fallbackSourcePageId) {
+    const mappedPage = input.pageMappings[input.fallbackSourcePageId];
+    if (mappedPage) {
+      warnings.push(commentWarning("comment_parent_fallback_used", "评论缺少可识别父级，已恢复到对应页面", oldCommentId));
+      return {
+        type: "page_id",
+        page_id: mappedPage
+      };
+    }
+  }
+  warnings.push(commentWarning("comment_parent_missing", "评论缺少可恢复的父级页面或区块，已跳过", oldCommentId));
+  return null;
+}
+
+function commentWarning(code: string, message: string, commentId: string | null, details: Record<string, unknown> = {}): RestoreWarning {
+  return {
+    code,
+    message,
+    ...(commentId ? { details: { commentId, ...details } } : Object.keys(details).length > 0 ? { details } : {})
+  };
+}
+
+export function commentCreateFailureWarning(error: unknown, sourcePageId: string, oldCommentId: string | null): RestoreWarning {
+  if (error instanceof NotionApiError && error.status === 403) {
+    return {
+      code: "comments_insert_permission_missing",
+      message: "Notion token 缺少 Insert comments 权限，无法创建恢复评论；请在 Notion integration 中启用后重新恢复",
+      objectId: sourcePageId,
+      details: {
+        ...(oldCommentId ? { commentId: oldCommentId } : {}),
+        status: error.status
+      }
+    };
+  }
+  return {
+    code: "comment_restore_failed",
+    message: `评论恢复失败：${errorMessage(error)}`,
+    objectId: sourcePageId,
+    details: oldCommentId ? { commentId: oldCommentId } : undefined
+  };
 }
 
 async function convertBlockForRestoreWithAssets(context: RestoreContext, block: NotionObject, sourcePageId: string): Promise<BlockConversion> {
@@ -902,6 +1084,143 @@ async function readPageArtifact(runDir: string, pageId: string): Promise<PageArt
     throw badRequest(`页面备份文件格式无效：${pageId}`);
   }
   return artifact;
+}
+
+function readPageArtifactSync(runDir: string, pageId: string): PageArtifact | null {
+  const filePath = pageArtifactPath(runDir, pageId);
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const artifact = JSON.parse(readFileSync(filePath, "utf8")) as PageArtifact;
+    return artifact.page && Array.isArray(artifact.blocks) ? artifact : null;
+  } catch {
+    return null;
+  }
+}
+
+function readDataSourceEntriesSync(runDir: string, dataSourceId: string): NotionObject[] | null {
+  const filePath = path.join(dataSourceArtifactPath(runDir, dataSourceId), "entries.json");
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const entries = JSON.parse(readFileSync(filePath, "utf8"));
+    return Array.isArray(entries) ? entries.filter((entry): entry is NotionObject => isRecord(entry)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function commentPreflightWarningsForPage(runDir: string, pageId: string, title: string): RestoreWarning[] {
+  const artifact = readPageArtifactSync(runDir, pageId);
+  if (!artifact) {
+    return [];
+  }
+  return commentPreflightWarningsForArtifact(artifact, pageId, `页面没有备份评论，恢复时会跳过评论；如果源页面有评论，请确认 Notion token 已启用 Read comments 后重新备份：${title}`);
+}
+
+function commentPreflightWarningsForDataSource(runDir: string, dataSourceId: string, title: string): RestoreWarning[] {
+  const entries = readDataSourceEntriesSync(runDir, dataSourceId);
+  if (!entries) {
+    return [];
+  }
+  let pageArtifactCount = 0;
+  let commentCount = 0;
+  let unsupportedCommentCount = 0;
+  let readPermissionFailureCount = 0;
+  for (const entry of entries) {
+    const entryPageId = readNotionObjectId(entry);
+    if (!entryPageId) {
+      continue;
+    }
+    const artifact = readPageArtifactSync(runDir, entryPageId);
+    if (!artifact) {
+      continue;
+    }
+    pageArtifactCount += 1;
+    if (commentArtifactWarnings(artifact.comments).some((warning) => warning.code === "comments_read_permission_missing")) {
+      readPermissionFailureCount += 1;
+    }
+    const comments = extractBackedUpComments(artifact.comments);
+    commentCount += comments.length;
+    if (hasBackedUpComments(artifact.comments) && comments.length === 0) {
+      unsupportedCommentCount += 1;
+    }
+  }
+  const warnings: RestoreWarning[] = [];
+  if (readPermissionFailureCount > 0) {
+    warnings.push({
+      code: "comments_read_permission_missing",
+      message: `数据源中有 ${readPermissionFailureCount} 个条目的评论未备份：Notion token 缺少 Read comments 权限；请启用后重新备份：${title}`,
+      objectId: dataSourceId
+    });
+  }
+  if (pageArtifactCount > 0 && commentCount === 0 && readPermissionFailureCount === 0) {
+    warnings.push({
+      code: "data_source_comments_missing",
+      message: `数据源条目没有备份评论，恢复时会跳过评论；如果源页面有评论，请确认 Notion token 已启用 Read comments 后重新备份：${title}`,
+      objectId: dataSourceId
+    });
+  }
+  if (unsupportedCommentCount > 0) {
+    warnings.push({
+      code: "data_source_comments_unsupported",
+      message: `数据源中有 ${unsupportedCommentCount} 个条目的评论备份格式无法识别，恢复时会跳过这些评论`,
+      objectId: dataSourceId
+    });
+  }
+  return warnings;
+}
+
+function commentPreflightWarningsForArtifact(artifact: PageArtifact, pageId: string, missingMessage: string): RestoreWarning[] {
+  const backupWarnings = commentArtifactWarnings(artifact.comments);
+  if (backupWarnings.length > 0) {
+    return backupWarnings.map((warning) => ({
+      ...warning,
+      objectId: warning.objectId || pageId
+    }));
+  }
+  if (!hasBackedUpComments(artifact.comments)) {
+    return [
+      {
+        code: "page_comments_missing",
+        message: missingMessage,
+        objectId: pageId
+      }
+    ];
+  }
+  if (extractBackedUpComments(artifact.comments).length === 0) {
+    return [
+      {
+        code: "page_comments_unsupported",
+        message: "页面评论备份格式无法识别，恢复时会跳过评论",
+        objectId: pageId
+      }
+    ];
+  }
+  return [];
+}
+
+function commentArtifactWarnings(value: unknown): RestoreWarning[] {
+  if (!isRecord(value) || !Array.isArray(value.warnings)) {
+    return [];
+  }
+  return value.warnings.flatMap((warning) => {
+    if (!isRecord(warning) || typeof warning.code !== "string" || typeof warning.message !== "string") {
+      return [];
+    }
+    const restoreWarning: RestoreWarning = {
+      code: warning.code,
+      message: warning.message
+    };
+    if ("details" in warning) {
+      restoreWarning.details = warning.details;
+    }
+    return [
+      restoreWarning
+    ];
+  });
 }
 
 async function readDataSourceSchema(runDir: string, dataSourceId: string): Promise<NotionObject> {
@@ -1765,7 +2084,7 @@ export function resolveRestoreStatus(input: { createdPages: number; createdDataS
   return "succeeded";
 }
 
-export function collectPageArtifactRestoreWarnings(artifact: { page: NotionObject; comments?: unknown }, pageId: string): RestoreWarning[] {
+export function collectPageArtifactRestoreWarnings(artifact: { page: NotionObject; comments?: unknown }, pageId: string, options: RestoreOptions = defaultRestoreOptions()): RestoreWarning[] {
   const warnings: RestoreWarning[] = [];
   const properties = artifact.page.properties;
   if (properties && typeof properties === "object") {
@@ -1802,27 +2121,49 @@ export function collectPageArtifactRestoreWarnings(artifact: { page: NotionObjec
     }
   }
 
-  if (hasBackedUpComments(artifact.comments)) {
-    warnings.push({
-      code: "comments_restore_not_implemented",
-      message: "评论恢复尚未实现；当前版本不会重新创建评论",
-      objectId: pageId
-    });
-  }
+  warnings.push(...collectPageCommentsRestoreWarnings(artifact, pageId, options));
   return warnings;
 }
 
-function collectPageCommentsRestoreWarnings(artifact: { comments?: unknown }, pageId: string): RestoreWarning[] {
-  if (!hasBackedUpComments(artifact.comments)) {
+function collectPageCommentsRestoreWarnings(artifact: { comments?: unknown }, pageId: string, options: RestoreOptions): RestoreWarning[] {
+  if (options.restoreComments) {
+    const backupWarnings = commentArtifactWarnings(artifact.comments);
+    if (backupWarnings.length > 0) {
+      return backupWarnings.map((warning) => ({
+        ...warning,
+        objectId: warning.objectId || pageId
+      }));
+    }
+    if (!hasBackedUpComments(artifact.comments)) {
+      return [
+        {
+          code: "page_comments_missing",
+          message: "页面没有备份评论，恢复时会跳过评论；如果源页面有评论，请确认 Notion token 已启用 Read comments 后重新备份",
+          objectId: pageId
+        }
+      ];
+    }
+    if (extractBackedUpComments(artifact.comments).length === 0) {
+      return [
+        {
+          code: "page_comments_unsupported",
+          message: "页面评论备份格式无法识别，已跳过评论恢复",
+          objectId: pageId
+        }
+      ];
+    }
     return [];
   }
-  return [
-    {
-      code: "comments_restore_not_implemented",
-      message: "评论恢复尚未实现；当前版本不会重新创建评论",
-      objectId: pageId
-    }
-  ];
+  if (hasBackedUpComments(artifact.comments)) {
+    return [
+      {
+        code: "comments_restore_not_requested",
+        message: "未启用评论恢复；已跳过备份评论",
+        objectId: pageId
+      }
+    ];
+  }
+  return [];
 }
 
 export function convertDataSourcePropertiesForRestore(sourceProperties: unknown, dataSourceId = ""): { properties: Record<string, NotionObject>; warnings: RestoreWarning[] } {
@@ -2467,6 +2808,19 @@ function hasBackedUpComments(value: unknown): boolean {
     return record.results.length > 0;
   }
   return Object.keys(record).length > 0;
+}
+
+function extractBackedUpComments(value: unknown): NotionObject[] {
+  if (Array.isArray(value)) {
+    return value.filter((comment): comment is NotionObject => isRecord(comment));
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  if (Array.isArray(value.results)) {
+    return value.results.filter((comment): comment is NotionObject => isRecord(comment));
+  }
+  return value.object === "comment" ? [value] : [];
 }
 
 function plainTextTitle(value: unknown): string {

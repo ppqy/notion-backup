@@ -7,6 +7,8 @@ import { DEFAULT_RESTORE_OPTIONS } from "../shared/constants.js";
 import type { BackupRunDetail, BackupRunItem } from "../shared/types.js";
 import {
   collectPageArtifactRestoreWarnings,
+  commentCreateFailureWarning,
+  convertCommentForRestore,
   convertBlockForRestore,
   convertDataSourcePropertiesForRestore,
   convertDataSourceViewForRestore,
@@ -16,6 +18,7 @@ import {
   summarizeRestorePreflight,
   validateRestorePreflight
 } from "./restore.js";
+import { NotionApiError } from "./notionClient.js";
 
 describe("restore block conversion", () => {
   it("converts paragraph rich text without response-only fields", () => {
@@ -272,8 +275,182 @@ describe("restore artifact warnings", () => {
       "page_property_skipped",
       "relation_property_skipped",
       "read_only_property_skipped",
-      "comments_restore_not_implemented"
+      "comments_restore_not_requested"
     ]);
+  });
+
+  it("does not warn for backed-up comments when comment restore is enabled", () => {
+    const warnings = collectPageArtifactRestoreWarnings(
+      {
+        page: {
+          properties: {
+            Name: { type: "title", title: [] }
+          }
+        },
+        comments: {
+          results: [{ id: "comment-1" }]
+        }
+      },
+      "page-1",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreComments: true }
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("warns when comment restore is enabled but comments are missing from the artifact", () => {
+    const warnings = collectPageArtifactRestoreWarnings(
+      {
+        page: {
+          properties: {
+            Name: { type: "title", title: [] }
+          }
+        },
+        comments: null
+      },
+      "page-1",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreComments: true }
+    );
+
+    expect(warnings.map((warning) => warning.code)).toEqual(["page_comments_missing"]);
+  });
+
+  it("surfaces backed-up comment read permission failures during restore", () => {
+    const warnings = collectPageArtifactRestoreWarnings(
+      {
+        page: {
+          properties: {
+            Name: { type: "title", title: [] }
+          }
+        },
+        comments: {
+          object: "page_comments",
+          status: "failed",
+          results: [],
+          warnings: [
+            {
+              code: "comments_read_permission_missing",
+              message: "Notion token 缺少 Read comments 权限，无法备份该页面评论；请在 Notion integration 中启用后重新备份"
+            }
+          ]
+        }
+      },
+      "page-1",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreComments: true }
+    );
+
+    expect(warnings).toEqual([
+      {
+        code: "comments_read_permission_missing",
+        message: "Notion token 缺少 Read comments 权限，无法备份该页面评论；请在 Notion integration 中启用后重新备份",
+        objectId: "page-1"
+      }
+    ]);
+  });
+});
+
+describe("restore comment conversion", () => {
+  it("builds create-comment payloads for mapped page comments", () => {
+    const conversion = convertCommentForRestore(
+      {
+        object: "comment",
+        id: "old-comment",
+        parent: {
+          type: "page_id",
+          page_id: "old-page"
+        },
+        rich_text: [
+          {
+            type: "text",
+            text: { content: "Remember this", link: null },
+            plain_text: "Remember this",
+            href: null
+          }
+        ]
+      },
+      {
+        pageMappings: { "old-page": "new-page" },
+        blockMappings: {}
+      }
+    );
+
+    expect(conversion.warnings).toEqual([]);
+    expect(conversion).toMatchObject({
+      oldCommentId: "old-comment",
+      request: {
+        parent: {
+          type: "page_id",
+          page_id: "new-page"
+        },
+        rich_text: [
+          {
+            type: "text",
+            text: { content: "Remember this" }
+          }
+        ]
+      }
+    });
+  });
+
+  it("builds create-comment payloads for mapped block comments and warns for attachments", () => {
+    const conversion = convertCommentForRestore(
+      {
+        object: "comment",
+        id: "old-comment",
+        parent: {
+          type: "block_id",
+          block_id: "old-block"
+        },
+        rich_text: [{ type: "text", text: { content: "Block note" } }],
+        attachments: [{ category: "image", file: { url: "https://example.com/image.png" } }]
+      },
+      {
+        pageMappings: {},
+        blockMappings: { "old-block": "new-block" }
+      }
+    );
+
+    expect(conversion.request).toMatchObject({
+      parent: {
+        type: "block_id",
+        block_id: "new-block"
+      },
+      rich_text: [{ type: "text", text: { content: "Block note" } }]
+    });
+    expect(conversion.warnings.map((warning) => warning.code)).toEqual(["comment_attachments_skipped"]);
+  });
+
+  it("skips comments without mapped targets or readable text", () => {
+    const conversion = convertCommentForRestore(
+      {
+        object: "comment",
+        id: "old-comment",
+        parent: {
+          type: "page_id",
+          page_id: "old-page"
+        },
+        rich_text: []
+      },
+      {
+        pageMappings: {},
+        blockMappings: {}
+      }
+    );
+
+    expect(conversion.request).toBeNull();
+    expect(conversion.warnings.map((warning) => warning.code)).toEqual(["comment_target_unmapped", "comment_rich_text_missing"]);
+  });
+
+  it("turns Notion comment create permission failures into a clear warning", () => {
+    expect(commentCreateFailureWarning(new NotionApiError(403, "restricted_resource", "Insufficient permissions for this endpoint."), "page-1", "comment-1")).toEqual({
+      code: "comments_insert_permission_missing",
+      message: "Notion token 缺少 Insert comments 权限，无法创建恢复评论；请在 Notion integration 中启用后重新恢复",
+      objectId: "page-1",
+      details: {
+        commentId: "comment-1",
+        status: 403
+      }
+    });
   });
 });
 
@@ -723,6 +900,48 @@ describe("restore preflight", () => {
       { ...DEFAULT_RESTORE_OPTIONS, restoreViews: true }
     );
     expect(partialSummary.warnings.map((warning) => warning.code)).toContain("data_source_views_artifact_partial");
+  });
+
+  it("warns when comment restore is requested but backed-up comments are missing", async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), "restore-comments-summary-"));
+    await mkdir(path.join(runDir, "pages"), { recursive: true });
+    await writeFile(
+      path.join(runDir, "manifest.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        capabilities: [],
+        artifactKinds: []
+      }),
+      "utf8"
+    );
+    await writeFile(
+      path.join(runDir, "pages", "page-1.json"),
+      JSON.stringify({
+        page: {
+          properties: {
+            Name: { type: "title", title: [] }
+          }
+        },
+        blocks: [],
+        comments: {
+          results: []
+        }
+      }),
+      "utf8"
+    );
+
+    const summary = summarizeRestorePreflight(
+      {
+        id: "run-1",
+        runKey: "run-key",
+        artifactDir: runDir,
+        items: [successfulItem()]
+      },
+      "target-parent",
+      { ...DEFAULT_RESTORE_OPTIONS, restoreComments: true }
+    );
+
+    expect(summary.warnings.map((warning) => warning.code)).toContain("page_comments_missing");
   });
 });
 

@@ -32,6 +32,7 @@ describe("restore report compatibility", () => {
       createdDataSources: 0,
       createdBlocks: 0,
       createdViews: 0,
+      createdComments: 0,
       skippedItems: 0,
       failedItems: 0,
       warningCount: 0
@@ -45,9 +46,10 @@ describe("restore report compatibility", () => {
   it("parses stored restore options and summary JSON defensively", () => {
     expect(parseRestoreOptionsJson(null)).toEqual(DEFAULT_RESTORE_OPTIONS);
     expect(parseRestoreOptionsJson('{"restoreComments":false,"restoreViews":false,"importExternalUrls":false,"relationStrategy":"mapped_only"}')).toEqual(DEFAULT_RESTORE_OPTIONS);
-    expect(parseRestoreSummaryJson('{"createdPages":2,"createdViews":3}')).toMatchObject({
+    expect(parseRestoreSummaryJson('{"createdPages":2,"createdViews":3,"createdComments":4}')).toMatchObject({
       createdPages: 2,
       createdViews: 3,
+      createdComments: 4,
       createdDataSources: 0,
       warningCount: 0
     });

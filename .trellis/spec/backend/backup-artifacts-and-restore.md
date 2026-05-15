@@ -28,7 +28,7 @@ Restore/import is a best-effort workflow. It can recreate content into new Notio
 ### 3. Contracts
 
 * `manifest.json` records run status, partial state, plan snapshot, selected items, per-item result/error metadata, and skipped file count.
-* `pages/<page-id>.json` is canonical and contains the page object, complete property item payloads where available, recursive block JSON, optional comments, and optional Markdown API response.
+* `pages/<page-id>.json` is canonical and contains the page object, complete property item payloads where available, recursive block JSON, optional comments or comment backup failure metadata, and optional Markdown API response.
 * `data-sources/<data-source-id>/schema.json` stores the retrieved data source object and schema.
 * `data-sources/<data-source-id>/entries.json` stores queried data source entry pages; each entry page must also be backed up through the page artifact path.
 * `data-sources/<data-source-id>/views.json` stores the source data source ID, capture status, retrieved full view objects, and warnings for failed list/retrieve operations.
@@ -268,6 +268,7 @@ if (request.request) {
 * Block conversion must strip response-only fields and downgrade unsupported rich text mentions to plain text with warnings.
 * Child pages are restored recursively when their page JSON artifact exists.
 * Restore should upload downloaded Notion-hosted/local asset files through Notion File Uploads when `assets/<page-id>/manifest.json` has a matching downloaded file. External media URLs may still be reattached directly.
+* Restore should recreate backed-up comments only when `restoreComments` is true and the comment parent can be mapped to a restored page or block. Comment authors, timestamps, resolved state, exact discussion history, and original comment IDs are not preserved.
 * The restore report uses shared `RestoreReport` DTO and records status, mappings, item results, warnings, errors, and `manifestPath`.
 
 ### 4. Validation & Error Matrix
@@ -297,6 +298,7 @@ if (request.request) {
 * Child page conversion tests must assert recursive page restore action.
 * File block tests must assert external media stays external, downloaded Notion-hosted files become `file_upload` payloads, and missing/skipped assets warn.
 * Page artifact warning tests must assert skipped properties/comments are reported.
+* Comment restore tests must assert mapped page/block target conversion, missing target warnings, attachment warnings, `mappings.comments`, and `summary.createdComments`.
 * Data source restore tests must assert schema conversion, page property conversion, data source summary/mapping fields, and relation/schema warning behavior.
 * Status resolution tests must assert skipped-only restores fail and mixed restores are partial.
 * API/shared DTO changes must pass `npm run lint`, `npm run build`, and targeted Vitest tests.
@@ -316,6 +318,75 @@ await notion.createPage({ parent, markdown });
 const artifact = await readPageArtifact(runDir, pageId);
 const restoredPage = await notion.createPage(createPageBody(targetParentId, artifact.page, title));
 await appendBlocks(restoredPage.id, artifact.blocks);
+```
+
+## Scenario: Best-Effort Comment Restore
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to `RestoreOptions.restoreComments`, comment backup shape, Notion comment creation, comment target mapping, or restore comment report metrics.
+
+### 2. Signatures
+
+* Restore request body: `{ "targetParent": "<Notion page URL or ID>", "options"?: { "restoreComments"?: boolean } }`.
+* Comment artifact input: `pages/<page-id>.json.comments`, normally the Notion comments list response captured during backup. If comment backup fails, write structured failure metadata under the same field with `status: "failed"`, `results: []`, and `warnings[]`.
+* Notion wrapper method: `createComment(body)` -> `POST /comments`.
+* Restore output mappings: `RestoreReport.mappings.comments[oldCommentId] = newCommentId`.
+* Restore summary metric: `RestoreReport.summary.createdComments`.
+
+### 3. Contracts
+
+* Comment restore is opt-in. Default restore behavior must keep `restoreComments: false`.
+* Comment backup requires a Notion connection with `Read comments`; comment restore requires `Insert comments`. If Notion returns `403 Insufficient permissions for this endpoint` while reading comments, the page artifact should preserve a `comments_read_permission_missing` warning so preflight/runtime reports explain that comments were not backed up.
+* Comment restore may run only after target page/block mappings exist.
+* A comment may be restored only when its parent page/block maps to a newly restored page/block in the same restore run.
+* Rich text must be sanitized through the same response-field stripping and mention-downgrade path used for block/page rich text.
+* Comment attachments, original authors, timestamps, resolved state, exact discussion history, and original comment IDs are not preserved.
+* Comment creation failures are restore warnings; they do not fail the restored page/data source item.
+
+### 4. Validation & Error Matrix
+
+* `restoreComments` omitted or false -> skip comment creation and warn at runtime when backed-up comments are present.
+* `restoreComments: true` and page has no backed-up comments -> preflight/runtime warning, no runtime failure. If comment backup failure metadata is present, surface its warning message instead of a generic missing-comments warning.
+* Comment parent has no page/block mapping -> skip that comment with `comment_target_unmapped`.
+* Comment has no readable rich text -> skip that comment with `comment_rich_text_missing`.
+* Comment has attachments -> restore text only and warn with `comment_attachments_skipped`.
+* Notion `POST /comments` returns a permission error -> warn with `comments_insert_permission_missing` and continue.
+* Other Notion `POST /comments` failures -> warn with `comment_restore_failed` and continue.
+
+### 5. Good/Base/Bad Cases
+
+* Good: a restored page has backed-up comments whose parent page ID maps to the new page; restore creates new Notion comments, records comment mappings, and increments `createdComments`.
+* Base: one backed-up comment points at an unmapped block; other comments restore and the unmapped one is warned.
+* Bad: restore claims original comment authors/timestamps were preserved, or creates comments on the target parent page when the original comment target could not be mapped.
+
+### 6. Tests Required
+
+* Validation tests assert `restoreComments: true` is accepted while unimplemented options remain rejected.
+* Preflight tests assert missing comment artifacts produce warnings when comment restore is requested.
+* Comment conversion tests assert page/block target mapping, missing target warnings, attachment warnings, and response-only rich text stripping.
+* Restore report compatibility tests assert `createdComments` defaults safely for old manifests.
+* Full quality gate: `npm run lint`, `npm test`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// This fabricates a target and makes the restored comment misleading.
+await notion.createComment({ parent: { page_id: targetParentId }, rich_text: oldComment.rich_text });
+```
+
+#### Correct
+
+```ts
+const mappedPageId = report.mappings.pages[oldComment.parent.page_id];
+if (!mappedPageId) {
+  warn("comment_target_unmapped");
+  return;
+}
+const created = await notion.createComment({ parent: { type: "page_id", page_id: mappedPageId }, rich_text });
+report.mappings.comments[oldComment.id] = created.id;
 ```
 
 ## Scenario: Data Source and Page Property Restore
@@ -554,7 +625,8 @@ app.post("/api/runs/:id/restore", async (request) => {
 ### 4. Validation & Error Matrix
 
 * Restore body omits `options` -> use current default restore options.
-* Restore body sets `restoreComments` or `importExternalUrls` to `true` before implementation -> reject with a localized `400 bad_request`.
+* Restore body sets `restoreComments: true` -> accept only as an explicit opt-in and recreate comments best-effort from backed-up comment JSON.
+* Restore body sets `importExternalUrls` to `true` before implementation -> reject with a localized `400 bad_request`.
 * Restore body sets `restoreViews: true` -> accept only as an explicit opt-in and gate behavior on backup manifest/artifacts before Notion writes.
 * Backup manifest lacks `schemaVersion` -> treat as legacy v1 and do not infer support for new artifact capabilities.
 * Backup manifest has missing or unknown `capabilities` / `artifactKinds` -> ignore unknown values and default missing arrays safely.
@@ -633,12 +705,14 @@ const restoredViewId = report?.mappings.views[oldViewId];
   * Property/data-source/view ID mapping. View restore and relation repair need old-to-new mappings beyond page/block/data source/file IDs.
   * Restore options persistence. Options such as restoring comments, restoring views, importing external URLs, or relation strategy must be stored with the restore job and manifest for auditability.
   * Extensible restore metrics. Avoid adding a new SQLite column for every future count when a nullable JSON summary can preserve history without repeated migrations.
+* Implemented model-sensitive restore slices:
+  * Best-effort comment recreation uses current page `comments` artifacts when `restoreComments` is true. It can create new comments on mapped restored pages/blocks, but cannot preserve original authors, timestamps, resolved state, exact discussion history, or original comment IDs.
 * P1 model-sensitive gaps:
-  * Best-effort comment recreation can use current page `comments` artifacts for simple page comments, but thread/block/discussion-level fidelity requires validating and possibly reshaping comment artifacts before implementation.
   * External URL import mode should use restore options and manifest warnings/mappings; it should not change existing external-file restore semantics silently.
 * P2 implementation-first gaps:
   * Multipart uploads for files larger than 20 MiB can reuse current asset manifest `path`/`bytes` data and mostly affects Notion upload flow.
   * File-backed page icons/covers can reuse current asset collection if a matching file object exists; missing matches should warn.
+  * Data source name-level icons require a data source update pass after database/data source creation. Database `icon/cover` restore alone does not restore the data source title row icon.
   * Additional block/property type support should use current page JSON first and add warnings when a type still cannot be restored.
 
 ### 4. Validation & Error Matrix

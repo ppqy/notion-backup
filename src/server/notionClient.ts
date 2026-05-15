@@ -217,6 +217,14 @@ export class NotionClient {
     });
   }
 
+  async createComment(body: unknown): Promise<NotionObject> {
+    return this.request({
+      method: "POST",
+      path: "comments",
+      body
+    });
+  }
+
   async retrieveMarkdown(pageId: string): Promise<NotionObject> {
     return this.request({
       method: "GET",

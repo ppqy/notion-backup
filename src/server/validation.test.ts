@@ -69,12 +69,12 @@ describe("restore validation", () => {
     expect(parseBody(restoreRunSchema, { targetParent: "target-parent" }).options).toEqual(DEFAULT_RESTORE_OPTIONS);
   });
 
-  it("accepts view restore and rejects future restore options that are not implemented yet", () => {
-    expect(parseBody(restoreRunSchema, { targetParent: "target-parent", options: { restoreViews: true } }).options).toEqual({
+  it("accepts comment/view restore and rejects future restore options that are not implemented yet", () => {
+    expect(parseBody(restoreRunSchema, { targetParent: "target-parent", options: { restoreComments: true, restoreViews: true } }).options).toEqual({
       ...DEFAULT_RESTORE_OPTIONS,
+      restoreComments: true,
       restoreViews: true
     });
-    expect(() => parseBody(restoreRunSchema, { targetParent: "target-parent", options: { restoreComments: true } })).toThrow("暂不支持恢复评论");
     expect(() => parseBody(restoreRunSchema, { targetParent: "target-parent", options: { importExternalUrls: true } })).toThrow("暂不支持导入外部 URL 文件");
   });
 });

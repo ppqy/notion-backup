@@ -39,13 +39,6 @@ export const restoreOptionsSchema = z
   })
   .strict()
   .superRefine((options, context) => {
-    if (options.restoreComments) {
-      context.addIssue({
-        code: "custom",
-        path: ["restoreComments"],
-        message: "暂不支持恢复评论"
-      });
-    }
     if (options.importExternalUrls) {
       context.addIssue({
         code: "custom",

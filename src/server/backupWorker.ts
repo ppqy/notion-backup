@@ -27,8 +27,30 @@ import { badRequest } from "./errors.js";
 type PageBackupResult = {
   pageId: string;
   title: string;
+  comments: CommentBackupSummary;
   files: DownloadResult[];
   childPages: SelectedContent[];
+};
+
+type CommentBackupSummary = {
+  status: "not_requested" | "succeeded" | "partial_failed" | "failed";
+  count: number;
+  warnings: number;
+  warningCodes: Record<string, number>;
+};
+
+type PageCommentsArtifactWarning = {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+type PageCommentsFailureArtifact = {
+  object: "page_comments";
+  status: "failed";
+  pageId: string;
+  results: [];
+  warnings: PageCommentsArtifactWarning[];
 };
 
 type Manifest = {
@@ -163,6 +185,54 @@ export async function writeDataSourceViewsArtifact(directory: string, artifact: 
   await writeJson(path.join(directory, DATA_SOURCE_VIEWS_ARTIFACT_FILENAME), artifact);
 }
 
+type PageCommentsClient = {
+  retrieveComments(blockId: string): Promise<NotionObject>;
+};
+
+export async function collectPageCommentsArtifact(input: {
+  pageId: string;
+  notion: PageCommentsClient;
+  logger: Pick<RunLogger, "write">;
+}): Promise<NotionObject | PageCommentsFailureArtifact> {
+  try {
+    return await input.notion.retrieveComments(input.pageId);
+  } catch (error) {
+    const warning = pageCommentsFailureWarning(error, input.pageId);
+    await input.logger.write("warn", "comments_failed", {
+      pageId: input.pageId,
+      code: warning.code,
+      error: errorMessage(error)
+    });
+    return {
+      object: "page_comments",
+      status: "failed",
+      pageId: input.pageId,
+      results: [],
+      warnings: [warning]
+    };
+  }
+}
+
+function pageCommentsFailureWarning(error: unknown, pageId: string): PageCommentsArtifactWarning {
+  if (isNotionPermissionError(error)) {
+    return {
+      code: "comments_read_permission_missing",
+      message: "Notion token 缺少 Read comments 权限，无法备份该页面评论；请在 Notion integration 中启用后重新备份",
+      details: {
+        pageId,
+        status: error.status
+      }
+    };
+  }
+  return {
+    code: "comments_backup_failed",
+    message: `评论备份失败：${errorMessage(error)}`,
+    details: {
+      pageId
+    }
+  };
+}
+
 export class BackupWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -246,6 +316,7 @@ export class BackupWorker {
       skippedFiles: 0
     };
     const seenPages = new Set<string>();
+    let commentReadPermissionFailures = 0;
     updateRun(run.id, {
       artifact_dir: runDir,
       current_phase: "备份中",
@@ -271,6 +342,7 @@ export class BackupWorker {
 
         try {
           const result = await this.backupSelected(run.id, notion, selected, plan, runDir, seenPages, logger);
+          commentReadPermissionFailures += commentWarningCodeCount(result, "comments_read_permission_missing");
           manifest.items.push({
             objectId: selected.objectId,
             objectType: selected.objectType,
@@ -320,7 +392,7 @@ export class BackupWorker {
       await writeJson(path.join(runDir, "manifest.json"), manifest);
       updateRun(run.id, {
         status: manifest.partial ? "partial_failed" : "succeeded",
-        status_message: manifest.partial ? "完成，但部分项目失败" : "备份完成",
+        status_message: backupFinishedStatusMessage(manifest.partial, commentReadPermissionFailures),
         current_phase: "完成",
         current_item_title: null,
         artifact_size_bytes: directorySizeBytes(runDir),
@@ -406,6 +478,7 @@ export class BackupWorker {
       dataSourceId,
       title: extractTitle(dataSource),
       entries: entryResults.length,
+      comments: summarizeDataSourceCommentsBackup(entryResults),
       views: {
         status: viewsArtifact.status,
         count: viewsArtifact.views.length,
@@ -431,6 +504,12 @@ export class BackupWorker {
       return {
         pageId,
         title: "已去重页面",
+        comments: {
+          status: "not_requested",
+          count: 0,
+          warnings: 0,
+          warningCodes: {}
+        },
         files: [],
         childPages: []
       };
@@ -442,7 +521,7 @@ export class BackupWorker {
     this.ensureNotCanceled(runId);
     const blocks = await this.retrieveBlockTree(runId, notion, pageId);
     this.ensureNotCanceled(runId);
-    const comments = plan.includeComments ? await safeOptional(() => notion.retrieveComments(pageId), logger, "comments_failed", pageId) : null;
+    const comments = plan.includeComments ? await collectPageCommentsArtifact({ pageId, notion, logger }) : null;
     this.ensureNotCanceled(runId);
     const markdown = await safeOptional(() => notion.retrieveMarkdown(pageId), logger, "markdown_failed", pageId);
     const pageTitle = extractTitle(page);
@@ -471,6 +550,7 @@ export class BackupWorker {
     return {
       pageId,
       title: pageTitle,
+      comments: summarizeCommentsBackup(plan.includeComments, comments),
       files,
       childPages
     };
@@ -594,6 +674,131 @@ function countSkipped(value: unknown): number {
   return total;
 }
 
+function summarizeCommentsBackup(includeComments: boolean, comments: unknown): CommentBackupSummary {
+  if (!includeComments) {
+    return {
+      status: "not_requested",
+      count: 0,
+      warnings: 0,
+      warningCodes: {}
+    };
+  }
+  const warnings = commentArtifactWarnings(comments);
+  if (warnings.length > 0) {
+    return {
+      status: "failed",
+      count: 0,
+      warnings: warnings.length,
+      warningCodes: countWarningCodes(warnings)
+    };
+  }
+  return {
+    status: "succeeded",
+    count: commentCount(comments),
+    warnings: 0,
+    warningCodes: {}
+  };
+}
+
+function summarizeDataSourceCommentsBackup(results: PageBackupResult[]): CommentBackupSummary {
+  if (results.length === 0 || results.every((result) => result.comments.status === "not_requested")) {
+    return {
+      status: "not_requested",
+      count: 0,
+      warnings: 0,
+      warningCodes: {}
+    };
+  }
+  const summary = results.reduce<CommentBackupSummary>(
+    (current, result) => ({
+      status: current.status,
+      count: current.count + result.comments.count,
+      warnings: current.warnings + result.comments.warnings,
+      warningCodes: mergeWarningCodes(current.warningCodes, result.comments.warningCodes)
+    }),
+    {
+      status: "succeeded",
+      count: 0,
+      warnings: 0,
+      warningCodes: {}
+    }
+  );
+  return {
+    ...summary,
+    status: summary.warnings > 0 && summary.count > 0 ? "partial_failed" : summary.warnings > 0 ? "failed" : "succeeded"
+  };
+}
+
+function commentWarningCodeCount(value: unknown, code: string): number {
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + commentWarningCodeCount(item, code), 0);
+  }
+  const record = value as Record<string, unknown>;
+  const comments = record.comments;
+  let total = 0;
+  if (comments && typeof comments === "object" && !Array.isArray(comments)) {
+    const warningCodes = (comments as Record<string, unknown>).warningCodes;
+    if (warningCodes && typeof warningCodes === "object" && !Array.isArray(warningCodes)) {
+      total += Number((warningCodes as Record<string, unknown>)[code] ?? 0);
+    }
+  }
+  for (const item of Object.values(record)) {
+    total += commentWarningCodeCount(item, code);
+  }
+  return total;
+}
+
+function commentArtifactWarnings(value: unknown): PageCommentsArtifactWarning[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+  const warnings = (value as Record<string, unknown>).warnings;
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+  return warnings.filter((warning): warning is PageCommentsArtifactWarning => {
+    return Boolean(warning && typeof warning === "object" && typeof (warning as PageCommentsArtifactWarning).code === "string");
+  });
+}
+
+function countWarningCodes(warnings: PageCommentsArtifactWarning[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const warning of warnings) {
+    counts[warning.code] = (counts[warning.code] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function mergeWarningCodes(left: Record<string, number>, right: Record<string, number>): Record<string, number> {
+  const merged = { ...left };
+  for (const [code, count] of Object.entries(right)) {
+    merged[code] = (merged[code] ?? 0) + count;
+  }
+  return merged;
+}
+
+function commentCount(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+  const results = (value as Record<string, unknown>).results;
+  return Array.isArray(results) ? results.length : 0;
+}
+
+function backupFinishedStatusMessage(partial: boolean, commentReadPermissionFailures: number): string {
+  if (commentReadPermissionFailures > 0) {
+    const commentMessage = `${commentReadPermissionFailures} 个页面评论未备份：Notion token 缺少 Read comments 权限`;
+    return partial ? `完成，但部分项目失败；${commentMessage}` : `备份完成；${commentMessage}`;
+  }
+  return partial ? "完成，但部分项目失败" : "备份完成";
+}
+
 function findChildPages(blocks: NotionObject[]): SelectedContent[] {
   const children: SelectedContent[] = [];
   for (const block of blocks) {
@@ -660,6 +865,10 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return "未知错误";
+}
+
+function isNotionPermissionError(error: unknown): error is NotionApiError {
+  return error instanceof NotionApiError && error.status === 403;
 }
 
 export async function validateObjectAccess(notion: NotionClient, objectId: string): Promise<{ object: NotionObject; objectType: NotionObjectType }> {

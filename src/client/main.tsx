@@ -30,6 +30,7 @@ import type {
   BackupRunStatus,
   DiscoveredContent,
   NotionConnectionStatus,
+  RestoreOptions,
   RestorePreflight,
   RestoreReport,
   RestoreRunDetail,
@@ -760,6 +761,7 @@ function PlanEditor({ initial, submitLabel, onSubmit }: { initial: PlanPayload; 
           镜像外链文件
         </label>
       </div>
+      {form.includeComments ? <p className="message info">备份评论需要 Notion integration 的 Read comments 权限；恢复评论还需要 Insert comments 权限。</p> : null}
       <label>
         单文件下载限制 MB
         <input
@@ -960,6 +962,7 @@ function RestoreRunRow({
 
 function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: RestoreRunDetail; onClose: () => void; onChanged: () => Promise<void> }) {
   const createdViews = detail.summaryMetrics?.createdViews ?? detail.report?.summary.createdViews ?? 0;
+  const createdComments = detail.summaryMetrics?.createdComments ?? detail.report?.summary.createdComments ?? 0;
   return (
     <div className="drawer" onClick={onClose}>
       <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
@@ -979,6 +982,7 @@ function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: Restor
           <Metric label="新建数据源" value={String(detail.createdDataSources)} />
           <Metric label="新建区块" value={String(detail.createdBlocks)} />
           <Metric label="新建视图" value={String(createdViews)} />
+          <Metric label="新建评论" value={String(createdComments)} />
           <Metric label="警告" value={String(detail.warningCount)} />
           <Metric label="失败" value={String(detail.failedItems)} />
         </div>
@@ -1031,6 +1035,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
           <StatusBadge status={detail.status} />
           <span>{statusLabel(detail.status)}</span>
           <span className="muted">{detail.runKey}</span>
+          {detail.statusMessage ? <span className="muted">{detail.statusMessage}</span> : null}
         </div>
         <div className="download-row">
           {detail.manifestAvailable ? (
@@ -1065,6 +1070,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
 
 function RestorePanel({ detail }: { detail: BackupRunDetail }) {
   const [targetParent, setTargetParent] = useState("");
+  const [restoreComments, setRestoreComments] = useState(false);
   const [restoreViews, setRestoreViews] = useState(false);
   const [report, setReport] = useState<RestoreReport | null>(null);
   const [preflight, setPreflight] = useState<RestorePreflight | null>(null);
@@ -1093,7 +1099,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     }
     setBusy(true);
     try {
-      setPreflight(await endpoints.preflightRestore(detail.id, targetParent.trim(), restoreViews ? { restoreViews: true } : undefined));
+      setPreflight(await endpoints.preflightRestore(detail.id, targetParent.trim(), restoreOptions(restoreComments, restoreViews)));
       setMessage("预检完成，确认后会创建恢复任务");
     } catch (error) {
       setMessage(errorText(error));
@@ -1113,7 +1119,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     setBusy(true);
     setMessage("");
     try {
-      const queued = await endpoints.restoreRun(detail.id, targetParent.trim(), restoreViews ? { restoreViews: true } : undefined);
+      const queued = await endpoints.restoreRun(detail.id, targetParent.trim(), restoreOptions(restoreComments, restoreViews));
       setRestoreRun(queued);
       setTargetParent("");
       setPreflight(null);
@@ -1134,6 +1140,19 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
       <p className="muted">恢复会创建新的 Notion 页面和数据源，不会覆盖或回滚原内容。评论、未下载或过大的文件和无法映射的关系会记录为警告。</p>
       <form className="inline-form" onSubmit={submitPreflight}>
         <input value={targetParent} onChange={(event) => setTargetParent(event.target.value)} placeholder="目标父页面 URL 或 ID" disabled={!canRestore || busy} />
+        <label className="check-line restore-option">
+          <input
+            type="checkbox"
+            checked={restoreComments}
+            onChange={(event) => {
+              setRestoreComments(event.target.checked);
+              setPreflight(null);
+              setRestoreRun(null);
+            }}
+            disabled={!canRestore || busy}
+          />
+          恢复评论
+        </label>
         <label className="check-line restore-option">
           <input
             type="checkbox"
@@ -1158,6 +1177,7 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
           </button>
         ) : null}
       </form>
+      {restoreComments ? <p className="message info">恢复评论需要当前 Notion token 的 Insert comments 权限；如果备份阶段缺少 Read comments，预检会提示没有可恢复的评论。</p> : null}
       {!canRestore ? <p className="message info">只有已完成或部分失败、且 manifest 可用的备份记录可以恢复。</p> : null}
       {message ? <p className={message.includes("完成") || message.includes("已排队") ? "message success" : "message error"}>{message}</p> : null}
       {preflight ? <RestorePreflightSummary preflight={preflight} /> : null}
@@ -1165,6 +1185,16 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
       {report ? <RestoreReportSummary report={report} /> : null}
     </section>
   );
+}
+
+function restoreOptions(restoreComments: boolean, restoreViews: boolean): Partial<RestoreOptions> | undefined {
+  if (!restoreComments && !restoreViews) {
+    return undefined;
+  }
+  return {
+    ...(restoreComments ? { restoreComments: true } : {}),
+    ...(restoreViews ? { restoreViews: true } : {})
+  };
 }
 
 function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight }) {
@@ -1175,6 +1205,7 @@ function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight })
         <Metric label="可恢复" value={String(preflight.restorableItems)} />
         <Metric label="页面" value={String(preflight.pages)} />
         <Metric label="数据源" value={String(preflight.dataSources)} />
+        <Metric label="评论" value={preflight.options.restoreComments ? "恢复" : "跳过"} />
         <Metric label="视图" value={preflight.options.restoreViews ? "恢复" : "跳过"} />
         <Metric label="将跳过" value={String(preflight.skippedItems)} />
       </div>
@@ -1205,6 +1236,7 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
         <Metric label="新建数据源" value={String(report.summary.createdDataSources ?? 0)} />
         <Metric label="新建区块" value={String(report.summary.createdBlocks)} />
         <Metric label="新建视图" value={String(report.summary.createdViews ?? 0)} />
+        <Metric label="新建评论" value={String(report.summary.createdComments ?? 0)} />
         <Metric label="警告" value={String(report.summary.warningCount)} />
         <Metric label="失败" value={String(report.summary.failedItems)} />
       </div>
@@ -1333,6 +1365,7 @@ function RunRow({ run, onClick, actions }: { run: Awaited<ReturnType<typeof endp
         <p className="muted">
           {run.triggerType === "manual" ? "手动" : "定时"} · {formatDate(run.createdAt)}
           {run.currentPhase ? ` · ${run.currentPhase}` : ""}
+          {run.statusMessage ? ` · ${run.statusMessage}` : ""}
         </p>
       </div>
       <div className="progress-text">

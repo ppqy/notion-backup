@@ -64,3 +64,13 @@ Drawer panel grids should align content at the top (`align-content: start` or eq
 ### Convention: Compact Filter Toolbars
 
 Toolbar filter controls should stay compact on desktop. Override the global full-width input/select rule inside `.toolbar`, and only expand controls to full width in mobile media queries.
+
+### Convention: Run Status Badges
+
+Run-level and item-level status badges must share one mapping helper instead of repeating inline ternaries in each drawer/list. Backup and restore item status `skipped` means the item is terminal/canceled, so it must render with the static canceled icon, not the spinning running icon.
+
+```tsx
+<StatusBadge status={itemStatusBadgeStatus(item.status)} />
+```
+
+Do not hand-map detail rows separately from history rows. When adding a new run/item status, update the shared badge helper and its tests first.

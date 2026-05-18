@@ -20,8 +20,7 @@ import {
   Settings,
   Shield,
   Square,
-  Trash2,
-  XCircle
+  Trash2
 } from "lucide-react";
 import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
 import type {
@@ -38,6 +37,7 @@ import type {
   SelectedContent
 } from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
+import { itemStatusBadgeStatus, StatusBadge } from "./statusBadge";
 import "./styles.css";
 
 type View = "dashboard" | "notion" | "plans" | "history" | "restore" | "security";
@@ -1003,7 +1003,7 @@ function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: Restor
         <div className="table">
           {detail.items.map((item) => (
             <div className="table-row" key={item.id}>
-              <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : item.status === "skipped" ? "canceled" : "running"} />
+              <StatusBadge status={itemStatusBadgeStatus(item.status)} />
               <div>
                 <strong>{item.title}</strong>
                 <p className="muted">
@@ -1055,7 +1055,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
         <div className="table">
           {detail.items.map((item) => (
             <div className="table-row" key={item.id}>
-              <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : "running"} />
+              <StatusBadge status={itemStatusBadgeStatus(item.status)} />
               <div>
                 <strong>{item.title}</strong>
                 <p className="muted">{item.objectType === "page" ? "页面" : "数据源"} · {item.artifactPath || item.errorMessage || "处理中"}</p>
@@ -1244,7 +1244,7 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
       <div className="table">
         {report.items.map((item) => (
           <div className="table-row" key={`${item.objectId}-${item.status}`}>
-            <StatusBadge status={item.status === "succeeded" ? "succeeded" : item.status === "failed" ? "failed" : "canceled"} />
+            <StatusBadge status={itemStatusBadgeStatus(item.status)} />
             <div>
               <strong>{item.title}</strong>
               <p className="muted">
@@ -1377,11 +1377,6 @@ function RunRow({ run, onClick, actions }: { run: Awaited<ReturnType<typeof endp
       </div>
     </article>
   );
-}
-
-function StatusBadge({ status }: { status: BackupRunStatus | RestoreRunStatus | "failed" | "succeeded" | "running" }) {
-  const icon = status === "succeeded" ? <CheckCircle2 /> : status === "failed" || status === "partial_failed" ? <XCircle /> : <Loader2 className="spin" />;
-  return <span className={`status-badge ${status}`}>{icon}</span>;
 }
 
 function StatusText({ status }: { status: BackupPlan["status"] }) {

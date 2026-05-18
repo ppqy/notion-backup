@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Database,
   Download,
+  ExternalLink,
   FileArchive,
   History,
   Home,
@@ -22,7 +23,7 @@ import {
   Square,
   Trash2
 } from "lucide-react";
-import { ADMIN_USERNAME_MIN_LENGTH, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
+import { ADMIN_USERNAME_MIN_LENGTH, NOTION_DEVELOPER_PORTAL_URL, NOTION_TOKEN_PREFIX, PASSWORD_MIN_LENGTH } from "../shared/constants";
 import type {
   BackupPlan,
   BackupRunDetail,
@@ -487,12 +488,21 @@ function NotionTokenForm({ onSaved }: { onSaved: () => void }) {
     }
   }
   return (
-    <form className="inline-form" onSubmit={save}>
-      <input value={token} onChange={(event) => setToken(event.target.value)} placeholder={`${NOTION_TOKEN_PREFIX}...`} type="password" />
-      <button className="primary" type="submit" disabled={busy}>
-        {busy ? <Loader2 className="spin" /> : <Save />}
-        保存并验证
-      </button>
+    <form className="notion-token-form" onSubmit={save}>
+      <div className="token-help message info">
+        <p>提示：前往 Notion Developer portal 创建或打开 Internal connection，在 Configuration 复制 Installation access token。token 需以 {NOTION_TOKEN_PREFIX} 开头，且目标页面或数据源需要分享给该 integration。</p>
+        <a className="button-like secondary" href={NOTION_DEVELOPER_PORTAL_URL} target="_blank" rel="noreferrer">
+          <ExternalLink />
+          打开 Notion 官方获取 token 页面
+        </a>
+      </div>
+      <div className="inline-form">
+        <input value={token} onChange={(event) => setToken(event.target.value)} placeholder={`${NOTION_TOKEN_PREFIX}...`} type="password" />
+        <button className="primary" type="submit" disabled={busy}>
+          {busy ? <Loader2 className="spin" /> : <Save />}
+          保存并验证
+        </button>
+      </div>
       {message ? <span className={message.includes("已") ? "message success" : "message error"}>{message}</span> : null}
     </form>
   );

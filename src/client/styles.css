@@ -415,6 +415,21 @@ h2 {
   max-width: 420px;
 }
 
+.notion-token-form {
+  display: grid;
+  gap: 12px;
+}
+
+.token-help {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+}
+
+.token-help p {
+  line-height: 1.5;
+}
+
 .table,
 .plan-list,
 .run-list {

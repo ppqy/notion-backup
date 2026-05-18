@@ -1,4 +1,5 @@
 export const NOTION_TOKEN_PREFIX = "ntn_";
+export const NOTION_DEVELOPER_PORTAL_URL = "https://www.notion.so/developers";
 export const ADMIN_USERNAME_MIN_LENGTH = 3;
 export const PASSWORD_MIN_LENGTH = 8;
 

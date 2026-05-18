@@ -177,6 +177,24 @@ export type RestoreWarning = {
   details?: unknown;
 };
 
+export type RestoreWarningSeverity = "info" | "warning";
+
+export type RestoreWarningSummaryExample = {
+  message: string;
+  objectId?: string;
+  blockId?: string;
+  details?: unknown;
+};
+
+export type RestoreWarningSummary = {
+  code: string;
+  severity: RestoreWarningSeverity;
+  title: string;
+  message: string;
+  count: number;
+  examples: RestoreWarningSummaryExample[];
+};
+
 export type RestoreItemResult = {
   objectId: string;
   objectType: NotionObjectType;
@@ -222,6 +240,7 @@ export type RestoreReport = {
   mappings: RestoreReportMappings;
   items: RestoreItemResult[];
   warnings: RestoreWarning[];
+  warningSummaries: RestoreWarningSummary[];
   errors: string[];
   manifestPath: string | null;
 };
@@ -284,6 +303,7 @@ export type RestorePreflight = {
   options: RestoreOptions;
   backupManifest: BackupManifestMetadata;
   warnings: RestoreWarning[];
+  warningSummaries: RestoreWarningSummary[];
 };
 
 export type DashboardOverview = {

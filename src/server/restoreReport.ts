@@ -1,5 +1,6 @@
 import { DEFAULT_RESTORE_OPTIONS } from "../shared/constants.js";
-import type { RestoreOptions, RestoreReport, RestoreReportMappings, RestoreReportSummary } from "../shared/types.js";
+import type { RestoreOptions, RestoreReport, RestoreReportMappings, RestoreReportSummary, RestoreWarning } from "../shared/types.js";
+import { summarizeRestoreWarnings } from "./restoreWarnings.js";
 
 export function defaultRestoreOptions(): RestoreOptions {
   return { ...DEFAULT_RESTORE_OPTIONS };
@@ -74,6 +75,9 @@ export function normalizeRestoreReport(value: unknown): RestoreReport | null {
   if (!isRecord(value)) {
     return null;
   }
+  const warnings = readRestoreWarnings(value.warnings);
+  const summary = normalizeRestoreReportSummary(value.summary);
+  summary.warningCount = warnings.length;
   return {
     restoreId: typeof value.restoreId === "string" ? value.restoreId : "",
     sourceRunId: typeof value.sourceRunId === "string" ? value.sourceRunId : "",
@@ -83,10 +87,11 @@ export function normalizeRestoreReport(value: unknown): RestoreReport | null {
     status: isRestoreStatus(value.status) ? value.status : "failed",
     startedAt: typeof value.startedAt === "string" ? value.startedAt : "",
     finishedAt: typeof value.finishedAt === "string" ? value.finishedAt : null,
-    summary: normalizeRestoreReportSummary(value.summary),
+    summary,
     mappings: defaultRestoreReportMappings(isRecord(value.mappings) ? (value.mappings as Partial<RestoreReportMappings>) : {}),
     items: Array.isArray(value.items) ? (value.items as RestoreReport["items"]) : [],
-    warnings: Array.isArray(value.warnings) ? (value.warnings as RestoreReport["warnings"]) : [],
+    warnings,
+    warningSummaries: summarizeRestoreWarnings(warnings),
     errors: Array.isArray(value.errors) ? value.errors.filter((error): error is string => typeof error === "string") : [],
     manifestPath: typeof value.manifestPath === "string" ? value.manifestPath : null
   };
@@ -107,6 +112,26 @@ function readStringMap(value: unknown): Record<string, string> {
     return {};
   }
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+function readRestoreWarnings(value: unknown): RestoreWarning[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((warning): RestoreWarning[] => {
+    if (!isRecord(warning) || typeof warning.code !== "string" || typeof warning.message !== "string") {
+      return [];
+    }
+    return [
+      {
+        code: warning.code,
+        message: warning.message,
+        ...(typeof warning.objectId === "string" ? { objectId: warning.objectId } : {}),
+        ...(typeof warning.blockId === "string" ? { blockId: warning.blockId } : {}),
+        ...("details" in warning ? { details: warning.details } : {})
+      }
+    ];
+  });
 }
 
 function isRestoreStatus(value: unknown): value is RestoreReport["status"] {

@@ -942,6 +942,10 @@ describe("restore preflight", () => {
     );
 
     expect(summary.warnings.map((warning) => warning.code)).toContain("page_comments_missing");
+    expect(summary.warningSummaries.find((summary) => summary.code === "page_comments_missing")).toMatchObject({
+      severity: "warning",
+      count: 1
+    });
   });
 });
 

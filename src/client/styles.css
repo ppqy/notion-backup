@@ -340,6 +340,42 @@ h2 {
   gap: 12px;
 }
 
+.warning-summary {
+  background: #fff;
+  border: 1px solid #dde3ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.warning-summary-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.warning-summary p {
+  margin: 0;
+}
+
+.warning-summary details {
+  color: #697586;
+  font-size: 13px;
+}
+
+.warning-summary summary {
+  cursor: pointer;
+}
+
+.warning-examples {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .restore-panel {
   border-bottom: 1px solid #dde3ea;
   border-top: 1px solid #dde3ea;

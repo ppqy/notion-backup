@@ -12,6 +12,7 @@ import { NotionApiError, NotionClient, type NotionObject } from "./notionClient.
 import { extractTitle } from "./repositories/notionRepository.js";
 import { getRun } from "./repositories/runRepository.js";
 import { defaultRestoreOptions, defaultRestoreReportMappings, defaultRestoreReportSummary, normalizeRestoreReport } from "./restoreReport.js";
+import { summarizeRestoreWarnings } from "./restoreWarnings.js";
 import { writeJson } from "./storage.js";
 import { nowIso } from "./time.js";
 
@@ -339,7 +340,8 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
     dataSources,
     options,
     backupManifest,
-    warnings
+    warnings,
+    warningSummaries: summarizeRestoreWarnings(warnings)
   };
 }
 
@@ -960,6 +962,7 @@ function createInitialReport(restoreId: string, sourceRunId: string, sourceRunKe
     mappings: defaultRestoreReportMappings(),
     items: [],
     warnings: [],
+    warningSummaries: [],
     errors: [],
     manifestPath: null
   };
@@ -1046,6 +1049,7 @@ async function emitProgress(context: RestoreContext): Promise<void> {
   context.report.summary.failedItems = context.report.items.filter((item) => item.status === "failed").length;
   context.report.summary.skippedItems = context.report.items.filter((item) => item.status === "skipped").length;
   context.report.summary.warningCount = context.report.warnings.length;
+  refreshWarningSummaries(context.report);
   await context.onProgress?.(context.report);
 }
 
@@ -1055,6 +1059,7 @@ function finishReport(report: RestoreReport, statusOverride?: RestoreStatus): vo
   report.summary.failedItems = failedItems;
   report.summary.skippedItems = skippedItems;
   report.summary.warningCount = report.warnings.length;
+  refreshWarningSummaries(report);
   report.finishedAt = nowIso();
   report.status =
     statusOverride ??
@@ -1067,7 +1072,12 @@ function finishReport(report: RestoreReport, statusOverride?: RestoreStatus): vo
     });
 }
 
+function refreshWarningSummaries(report: RestoreReport): void {
+  report.warningSummaries = summarizeRestoreWarnings(report.warnings);
+}
+
 async function persistRestoreReport(runDir: string, report: RestoreReport): Promise<void> {
+  refreshWarningSummaries(report);
   const manifestPath = path.join(runDir, "restores", report.restoreId, "restore-manifest.json");
   report.manifestPath = path.relative(runDir, manifestPath);
   await writeJson(manifestPath, report);

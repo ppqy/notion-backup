@@ -35,6 +35,7 @@ import type {
   RestoreReport,
   RestoreRunDetail,
   RestoreRunStatus,
+  RestoreWarningSummary,
   SelectedContent
 } from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
@@ -1325,7 +1326,6 @@ function restoreOptions(restoreComments: boolean, restoreViews: boolean): Partia
 }
 
 function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight }) {
-  const warnings = preflight.warnings.slice(0, 6);
   return (
     <div className="restore-report">
       <div className="metrics compact">
@@ -1337,23 +1337,12 @@ function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight })
         <Metric label="将跳过" value={String(preflight.skippedItems)} />
       </div>
       <p className="muted">目标父页面：{preflight.targetParentId}</p>
-      {warnings.length > 0 ? (
-        <div className="warning-list">
-          <strong>预检提示</strong>
-          {warnings.map((warning, index) => (
-            <p className="muted" key={`${warning.code}-${index}`}>
-              {warning.message}
-            </p>
-          ))}
-          {preflight.warnings.length > warnings.length ? <p className="muted">还有 {preflight.warnings.length - warnings.length} 条提示会写入恢复记录。</p> : null}
-        </div>
-      ) : null}
+      <WarningSummarySections summaries={preflight.warningSummaries} warningTitle="预检警告" noticeTitle="预检提示" />
     </div>
   );
 }
 
 function RestoreReportSummary({ report }: { report: RestoreReport }) {
-  const warnings = report.warnings.slice(0, 8);
   const errors = report.errors.slice(0, 5);
   return (
     <div className="restore-report">
@@ -1385,17 +1374,7 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
           </div>
         ))}
       </div>
-      {warnings.length > 0 ? (
-        <div className="warning-list">
-          <strong>警告</strong>
-          {warnings.map((warning, index) => (
-            <p className="muted" key={`${warning.code}-${index}`}>
-              {warning.message}
-            </p>
-          ))}
-          {report.warnings.length > warnings.length ? <p className="muted">还有 {report.warnings.length - warnings.length} 条警告记录在 restore manifest 中。</p> : null}
-        </div>
-      ) : null}
+      <WarningSummarySections summaries={report.warningSummaries} warningTitle="警告" noticeTitle="提示" />
       {errors.length > 0 ? (
         <div className="warning-list">
           <strong>错误</strong>
@@ -1408,6 +1387,60 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
       ) : null}
     </div>
   );
+}
+
+function WarningSummarySections({
+  summaries,
+  warningTitle,
+  noticeTitle
+}: {
+  summaries: RestoreWarningSummary[];
+  warningTitle: string;
+  noticeTitle: string;
+}) {
+  const warnings = summaries.filter((summary) => summary.severity === "warning");
+  const notices = summaries.filter((summary) => summary.severity === "info");
+  return (
+    <>
+      {warnings.length > 0 ? <WarningSummaryList title={warningTitle} summaries={warnings} /> : null}
+      {notices.length > 0 ? <WarningSummaryList title={noticeTitle} summaries={notices} /> : null}
+    </>
+  );
+}
+
+function WarningSummaryList({ title, summaries }: { title: string; summaries: RestoreWarningSummary[] }) {
+  const total = summaries.reduce((sum, summary) => sum + summary.count, 0);
+  return (
+    <div className="warning-list">
+      <strong>
+        {title} · {total} 条
+      </strong>
+      {summaries.map((summary) => (
+        <div className="warning-summary" key={`${summary.severity}-${summary.code}`}>
+          <div className="warning-summary-head">
+            <strong>{summary.title}</strong>
+            <span className="muted">{summary.count} 条</span>
+          </div>
+          <p className="muted">{summary.message}</p>
+          {summary.examples.length > 0 ? (
+            <details>
+              <summary>查看示例</summary>
+              <ul className="warning-examples">
+                {summary.examples.map((example, index) => (
+                  <li key={`${summary.code}-${index}`}>{warningExampleText(example)}</li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function warningExampleText(example: RestoreWarningSummary["examples"][number]): string {
+  const refs = [example.objectId ? `对象 ${example.objectId}` : null, example.blockId ? `区块 ${example.blockId}` : null].filter(Boolean);
+  return refs.length > 0 ? `${example.message}（${refs.join(" · ")}）` : example.message;
 }
 
 function ConfirmActionDialog({

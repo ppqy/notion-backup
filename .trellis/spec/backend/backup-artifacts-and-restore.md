@@ -524,6 +524,61 @@ report.mappings.files[oldFileUrl] = uploadId;
 return { type: "file", file: { type: "file_upload", file_upload: { id: uploadId } } };
 ```
 
+## Scenario: Restore Warning Summaries
+
+### 1. Scope / Trigger
+
+* Trigger: Any change to restore warning DTOs, restore preflight output, restore report persistence, restore report readers, or warning UI display.
+
+### 2. Signatures
+
+* Raw warning item: `RestoreWarning { code, message, objectId?, blockId?, details? }`.
+* Grouped warning item: `RestoreWarningSummary { code, severity, title, message, count, examples }`.
+* Preflight restore response includes both `warnings` and `warningSummaries`.
+* Restore manifest/report includes both `warnings` and `warningSummaries`.
+
+### 3. Contracts
+
+* `warnings` remains the raw audit trail and must not be removed or deduplicated.
+* `warningSummaries` is derived from raw warnings and groups repeated warnings by stable warning `code`.
+* Informational notices, such as restore creating new content, should use `severity: "info"` so the UI can separate them from actionable warnings.
+* Restore report readers must regenerate `warningSummaries` from raw `warnings` when loading old manifests that lack the grouped field.
+* `summary.warningCount` should reflect the raw `warnings.length`, not the grouped summary count.
+
+### 4. Validation & Error Matrix
+
+* Old restore manifest lacks `warningSummaries` -> normalize safely by deriving summaries from `warnings`.
+* Malformed or missing raw `warnings` -> normalize to an empty raw warning list and empty summaries.
+* Unknown warning code -> group by the unknown code with a fallback title/message; do not drop it.
+* Repeated warnings across many pages -> display one summary group with a count and a few examples.
+
+### 5. Good/Base/Bad Cases
+
+* Good: 100 pages missing comments render as one "页面评论缺失" summary with count 100 and example page warnings, while the manifest still stores all 100 raw warnings.
+* Base: a restore report has only one warning; it still appears as one summary group with one example.
+* Bad: UI slices the first few raw warnings and hides the rest behind a remaining count, causing repeated warning noise and weak diagnostics.
+
+### 6. Tests Required
+
+* Warning summary helper tests assert repeated warning grouping, example retention, and info-vs-warning severity ordering.
+* Restore preflight tests assert `warningSummaries` exists alongside raw `warnings`.
+* Restore report compatibility tests assert old manifests derive `warningSummaries` and preserve accurate `summary.warningCount`.
+* Full quality gate: `npm run lint`, `npm test`, and `npm run build`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const warnings = report.warnings.slice(0, 8);
+```
+
+#### Correct
+
+```ts
+const summaries = summarizeRestoreWarnings(report.warnings);
+```
+
 ## Scenario: Restore Run History, Preflight, and Cooperative Cancellation
 
 ### 1. Scope / Trigger

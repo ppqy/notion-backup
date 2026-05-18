@@ -450,7 +450,9 @@ Backed up Notion data source view artifacts with manifest capability gating, war
 
 ### Main Changes
 
-(Add details)
+- Added shared Notion token guidance in `NotionTokenForm` so setup and Notion settings show the same instructions.
+- Added a quick link to the official Notion developer portal for obtaining an internal integration token.
+- Added `NOTION_DEVELOPER_PORTAL_URL` as a shared constant and styled the guidance block.
 
 ### Git Commits
 
@@ -460,7 +462,10 @@ Backed up Notion data source view artifacts with manifest capability gating, war
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm run build`
+- [OK] `npm run test`
+- [OK] Local HTTP check returned 200 from `http://127.0.0.1:3000`
 
 ### Status
 
@@ -657,6 +662,39 @@ Added unified in-app confirmation and queued feedback dialogs for manual backup 
 | Hash | Message |
 |------|---------|
 | `007b9ac` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 19: Notion token setup guidance
+
+**Date**: 2026-05-18
+**Task**: Notion token setup guidance
+**Branch**: `main`
+
+### Summary
+
+Added shared Notion token input guidance with a quick link to the official Notion developer portal, covering both setup flow and Notion settings. Verified with lint, build, and tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e42faa7` | (see git log) |
 
 ### Testing
 

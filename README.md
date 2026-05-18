@@ -6,7 +6,7 @@
 
 Languages: English | [简体中文](README_CN.md)
 
-Self-hosted Notion backup dashboard for selecting pages and data sources, running manual or scheduled backups, and storing backup metadata locally in SQLite.
+Self-hosted Notion backup dashboard for selecting pages and data sources, running manual or scheduled backups, storing backup metadata locally in SQLite, and restoring backed-up content into new Notion pages/data sources.
 
 The product UI is Chinese-first. The runtime is a single Fastify server that serves the React dashboard, owns the API, runs the backup worker, and writes artifacts to local disk or a mounted Docker data directory.
 
@@ -21,6 +21,8 @@ The product UI is Chinese-first. The runtime is a single Fastify server that ser
 - [Notion Setup](#notion-setup)
 - [Configuration](#configuration)
 - [Backup Data](#backup-data)
+- [Restore Workflow](#restore-workflow)
+- [Restore Limits and Future Work](#restore-limits-and-future-work)
 - [Available Scripts](#available-scripts)
 - [Project Structure](#project-structure)
 - [Quality Checks](#quality-checks)
@@ -36,6 +38,9 @@ The product UI is Chinese-first. The runtime is a single Fastify server that ser
 - Backup plans with manual runs, hourly/daily/weekly/monthly schedules, custom cron expressions, and timezone support.
 - Backup options for child pages, comments, Notion-hosted file downloads, external file mirroring, and per-file size limits.
 - Run queue with progress polling, cancellation, filtered history, manifest download, and zip archive download.
+- Restore workflow with preflight validation, queued restore jobs, progress polling, cancellation, restore history, and restore reports.
+- JSON-based restore into new Notion content for backed-up pages, common blocks, child pages, data sources, entry pages, supported properties, and downloaded file assets.
+- Optional best-effort restore for backed-up comments and backed-up data source views.
 - Local SQLite metadata and filesystem artifacts for simple self-hosted operation.
 
 ## Tech Stack
@@ -144,6 +149,8 @@ The Node dev command does not automatically load `.env`; export variables in you
 
 Only content that the integration can access can be backed up.
 
+Comment backup requires the integration's **Read comments** capability. Restoring backed-up comments requires **Insert comments**.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -179,6 +186,46 @@ data/
 ```
 
 Each run writes JSON artifacts for selected pages and data sources. Markdown and comments are captured when enabled and available from the Notion API. File assets are downloaded according to the plan options and size limit.
+
+Data source backups can also include `data-sources/<data-source-id>/views.json` view artifacts. Restore jobs write reports under the source run directory, including `restore-latest.json` and `restores/<restore-id>/restore-manifest.json`.
+
+## Restore Workflow
+
+Restore is a best-effort recreation workflow. It creates new Notion content under a target parent page; it does not overwrite, move, delete, or roll back the original Notion content.
+
+User flow:
+
+1. Open a completed or partially failed backup run from **History**.
+2. Enter a target Notion parent page URL or ID.
+3. Optionally enable comment restore and data source view restore.
+4. Run preflight to validate the target parent, backup manifest, artifacts, and expected warnings.
+5. Confirm the restore job. The request returns immediately and the background worker processes it.
+6. Monitor progress, cancellation, and final reports from the top-level **Restore** view.
+
+Implemented restore coverage:
+
+- Pages and common block trees from canonical `pages/*.json` artifacts, including recursive child pages when their artifacts exist.
+- Data sources as new Notion database/data source content, with supported schema fields and entry pages.
+- Supported page properties such as title, rich text, number, checkbox, select, multi-select, status, date, URL, email, phone number, place, files, and mapped relations.
+- Downloaded Notion-hosted/local media and file properties through single-part Notion File Uploads when matching asset files exist and are at or below 20 MiB.
+- External media/file URLs remain external references unless a future import mode is implemented.
+- Backed-up comments when explicitly requested and when their page/block targets can be mapped to restored content.
+- Backed-up data source views when explicitly requested, the backup manifest declares view support, and `views.json` can be read.
+- Restore manifests/reports with old-to-new mappings, created counts, per-item results, warnings, errors, and selected restore options.
+
+## Restore Limits and Future Work
+
+Restore cannot preserve original Notion object IDs, original Notion URLs, edit history, permissions, sharing rules, authorship, or timestamps. Notion assigns new IDs to recreated content.
+
+Current known gaps:
+
+- External URL import mode is not implemented. External URLs are preserved as external references, not fetched and uploaded into Notion-hosted files.
+- Multipart file uploads are not implemented. Backed-up files larger than 20 MiB are skipped with warnings.
+- File-backed page icons/covers, data source name-level icons, and view icons are not restored.
+- Relation repair is `mapped_only`: relations are restored only when the related source page was restored in the same job and has an old-to-new mapping.
+- Unsupported or read-only/computed properties such as formulas, rollups, some relation schema fields, verification, created/edited metadata, and unsupported block types are skipped or degraded with warnings.
+- Comment authors, timestamps, resolved state, exact discussion history, and comment attachments are not preserved.
+- Current automated tests cover conversion, validation, repositories, reports, and worker behavior, but live Notion workspace integration testing remains future hardening work.
 
 ## Available Scripts
 

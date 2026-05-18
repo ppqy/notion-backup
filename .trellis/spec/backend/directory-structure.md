@@ -75,3 +75,55 @@ return db.prepare("SELECT * FROM backup_plans").all();
 // Repository maps database columns to a shared DTO.
 return rows.map(mapPlanRow);
 ```
+
+## Scenario: Static Frontend Asset Fallback
+
+### 1. Scope / Trigger
+- Trigger: Any change to `src/server/index.ts`, Fastify static serving, SPA fallback behavior, or production asset paths.
+
+### 2. Signatures
+- Static root: `dist/client`.
+- Asset URL prefix: `/assets/`.
+- SPA fallback: `app.setNotFoundHandler(...)` may serve `index.html` only for extensionless client routes.
+- Helper functions: `requestPathname(url)` and `shouldServeClientIndex(pathname)`.
+
+### 3. Contracts
+- Missing `/assets/*` files must return `404 text/plain`, never `index.html`.
+- Missing paths with a file extension such as `/favicon.ico` or `/robots.txt` must return a normal 404 unless the file exists.
+- `/api/*` and `/healthz` missing routes return JSON API-style 404 responses.
+- Extensionless client routes such as `/history` may fall back to `index.html`.
+
+### 4. Validation & Error Matrix
+- Old hashed JS path after a rebuild -> `404 text/plain`, not `200 text/html`.
+- Missing API route -> `404` with `{ error: { code: "not_found" } }`.
+- Client route refresh -> `200 text/html` with `index.html`.
+
+### 5. Good/Base/Bad Cases
+- Good: `/assets/index-old.js` returns 404 so the browser reports the real missing asset.
+- Base: `/history` returns `index.html` so SPA routing survives refresh.
+- Bad: returning `index.html` for missing module scripts, which causes strict MIME type errors because the browser requested JavaScript but received HTML.
+
+### 6. Tests Required
+- Unit-test fallback path classification for client routes, API/health routes, `/assets/*`, and extension-bearing paths.
+- Run `npm run build` after changing static serving.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```ts
+app.setNotFoundHandler((_request, reply) => {
+  void reply.sendFile("index.html");
+});
+```
+
+#### Correct
+```ts
+app.setNotFoundHandler((request, reply) => {
+  const pathname = requestPathname(request.url);
+  if (!shouldServeClientIndex(pathname)) {
+    void reply.status(404).type("text/plain").send("Not Found");
+    return;
+  }
+  void reply.sendFile("index.html");
+});
+```

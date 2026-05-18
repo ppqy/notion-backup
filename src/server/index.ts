@@ -7,6 +7,7 @@ import { closeDb, migrate } from "./db.js";
 import { registerRoutes } from "./routes.js";
 import { BackupWorker } from "./backupWorker.js";
 import { RestoreWorker } from "./restoreWorker.js";
+import { requestPathname, shouldServeClientIndex } from "./staticFallback.js";
 
 async function main(): Promise<void> {
   migrate();
@@ -26,13 +27,18 @@ async function main(): Promise<void> {
     wildcard: false
   });
   app.setNotFoundHandler((request, reply) => {
-    if (request.url.startsWith("/api") || request.url.startsWith("/healthz")) {
+    const pathname = requestPathname(request.url);
+    if (pathname.startsWith("/api") || pathname.startsWith("/healthz")) {
       void reply.status(404).send({
         error: {
           code: "not_found",
           message: "资源不存在"
         }
       });
+      return;
+    }
+    if (!shouldServeClientIndex(pathname)) {
+      void reply.status(404).type("text/plain").send("Not Found");
       return;
     }
     void reply.sendFile("index.html");

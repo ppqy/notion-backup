@@ -17,8 +17,18 @@ import {
   notionTokenSchema,
   restoreRunSchema
 } from "./validation.js";
-import { clearConnection, getConnectionStatus, getNotionToken, listDiscoveredContent, saveConnection, upsertDiscoveredContent } from "./repositories/notionRepository.js";
-import { NotionClient, ensureSupportedObjectType } from "./notionClient.js";
+import {
+  clearConnection,
+  getConnectionStatus,
+  getNotionToken,
+  listAllDiscoveredContent,
+  listDiscoveredContent,
+  saveConnection,
+  syncSearchDiscoveredContent,
+  upsertDiscoveredContent
+} from "./repositories/notionRepository.js";
+import { NotionApiError, NotionClient, ensureSupportedObjectType, type NotionObject } from "./notionClient.js";
+import type { DiscoveredContent } from "../shared/types.js";
 import { normalizeNotionId } from "./notionIds.js";
 import { validateObjectAccess } from "./backupWorker.js";
 import { createPlan, listPlans, softDeletePlan, updatePlan } from "./repositories/planRepository.js";
@@ -139,7 +149,7 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
     const identity = await notion.validateToken();
     const results = await notion.searchAll();
     saveConnection(input.token, identity);
-    upsertDiscoveredContent(results.filter((item) => item.object === "page" || item.object === "data_source" || item.object === "database"), "search");
+    upsertDiscoveredContent(discoverableNotionObjects(results), "search");
     return getConnectionStatus();
   });
 
@@ -154,10 +164,9 @@ export function registerRoutes(app: FastifyInstance, worker: BackupWorker): void
     const token = requireNotionToken();
     const notion = new NotionClient(token);
     const results = await notion.searchAll();
-    const items = upsertDiscoveredContent(
-      results.filter((item) => item.object === "page" || item.object === "data_source" || item.object === "database"),
-      "search"
-    );
+    const searchObjects = discoverableNotionObjects(results);
+    const staleManualObjectIds = await staleManualDiscoveredObjectIds(notion, searchObjects);
+    const items = syncSearchDiscoveredContent(searchObjects, staleManualObjectIds);
     return {
       items,
       total: items.length,
@@ -372,6 +381,37 @@ function requireNotionToken(): string {
     throw badRequest("请先设置有效的 Notion token");
   }
   return token;
+}
+
+function discoverableNotionObjects(results: NotionObject[]): NotionObject[] {
+  return results.filter((item) => item.object === "page" || item.object === "data_source" || item.object === "database");
+}
+
+async function staleManualDiscoveredObjectIds(notion: NotionClient, searchObjects: NotionObject[]): Promise<string[]> {
+  const searchObjectIds = new Set(searchObjects.map((object) => String(object.id ?? "")).filter(Boolean));
+  const staleObjectIds: string[] = [];
+  for (const content of listAllDiscoveredContent()) {
+    if (content.source !== "manual" || searchObjectIds.has(content.objectId)) {
+      continue;
+    }
+    if (!(await canAccessDiscoveredContent(notion, content))) {
+      staleObjectIds.push(content.objectId);
+    }
+  }
+  return staleObjectIds;
+}
+
+async function canAccessDiscoveredContent(notion: NotionClient, content: DiscoveredContent): Promise<boolean> {
+  try {
+    const object = content.objectType === "page" ? await notion.retrievePage(content.objectId) : await notion.retrieveDataSource(content.objectId);
+    ensureSupportedObjectType(object);
+    return true;
+  } catch (error) {
+    if (error instanceof NotionApiError && [403, 404].includes(error.status)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function getParam(request: FastifyRequest, key: string): string {

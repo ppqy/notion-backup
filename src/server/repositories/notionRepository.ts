@@ -27,6 +27,26 @@ type ContentRow = {
   updated_at: string;
 };
 
+const upsertDiscoveredContentSql = `
+  INSERT INTO discovered_content (
+     id, object_id, object_type, title, parent_json, url, last_edited_time, raw_json, source, discovered_at, updated_at
+   ) VALUES (
+     @id, @object_id, @object_type, @title, @parent_json, @url, @last_edited_time, @raw_json, @source, @discovered_at, @updated_at
+   )
+   ON CONFLICT(object_id) DO UPDATE SET
+     object_type = excluded.object_type,
+     title = excluded.title,
+     parent_json = excluded.parent_json,
+     url = excluded.url,
+     last_edited_time = excluded.last_edited_time,
+     raw_json = excluded.raw_json,
+     source = CASE
+       WHEN discovered_content.source = 'manual' THEN discovered_content.source
+       ELSE excluded.source
+     END,
+     updated_at = excluded.updated_at
+`;
+
 export function getConnectionStatus(): NotionConnectionStatus {
   const row = db.prepare("SELECT * FROM notion_connection WHERE id = 1").get() as ConnectionRow | undefined;
   if (!row) {
@@ -74,28 +94,43 @@ export function clearDiscoveredContent(): void {
 
 export function upsertDiscoveredContent(objects: NotionObject[], source: "search" | "manual"): DiscoveredContent[] {
   const timestamp = nowIso();
-  const upsert = db.prepare(
-    `INSERT INTO discovered_content (
-       id, object_id, object_type, title, parent_json, url, last_edited_time, raw_json, source, discovered_at, updated_at
-     ) VALUES (
-       @id, @object_id, @object_type, @title, @parent_json, @url, @last_edited_time, @raw_json, @source, @discovered_at, @updated_at
-     )
-     ON CONFLICT(object_id) DO UPDATE SET
-       object_type = excluded.object_type,
-       title = excluded.title,
-       parent_json = excluded.parent_json,
-       url = excluded.url,
-       last_edited_time = excluded.last_edited_time,
-       raw_json = excluded.raw_json,
-       source = excluded.source,
-       updated_at = excluded.updated_at`
-  );
   const rows = objects.map((object) => notionObjectToContentRow(object, source, timestamp));
   db.transaction(() => {
-    for (const row of rows) {
-      upsert.run(row);
-    }
+    upsertDiscoveredRows(rows);
   })();
+  return rows.map(mapContentRow);
+}
+
+export function syncSearchDiscoveredContent(objects: NotionObject[], staleObjectIds: string[] = []): DiscoveredContent[] {
+  const timestamp = nowIso();
+  const rows = objects.map((object) => notionObjectToContentRow(object, "search", timestamp));
+
+  db.transaction(() => {
+    deleteDiscoveredRowsByObjectId(staleObjectIds);
+    db.prepare("CREATE TEMP TABLE IF NOT EXISTS latest_search_discovered_content (object_id TEXT PRIMARY KEY)").run();
+    db.prepare("DELETE FROM latest_search_discovered_content").run();
+    const insertLatestSearchId = db.prepare("INSERT OR IGNORE INTO latest_search_discovered_content (object_id) VALUES (?)");
+    for (const row of rows) {
+      insertLatestSearchId.run(row.object_id);
+    }
+    db.prepare(
+      `DELETE FROM discovered_content
+       WHERE source = 'search'
+         AND object_id NOT IN (SELECT object_id FROM latest_search_discovered_content)`
+    ).run();
+    upsertDiscoveredRows(rows);
+    db.prepare("DELETE FROM latest_search_discovered_content").run();
+  })();
+  return rows.map(mapContentRow);
+}
+
+export function listAllDiscoveredContent(): DiscoveredContent[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM discovered_content
+       ORDER BY updated_at DESC, title ASC`
+    )
+    .all() as ContentRow[];
   return rows.map(mapContentRow);
 }
 
@@ -158,6 +193,20 @@ function notionObjectToContentRow(object: NotionObject, source: "search" | "manu
     discovered_at: timestamp,
     updated_at: timestamp
   };
+}
+
+function upsertDiscoveredRows(rows: ContentRow[]): void {
+  const upsert = db.prepare(upsertDiscoveredContentSql);
+  for (const row of rows) {
+    upsert.run(row);
+  }
+}
+
+function deleteDiscoveredRowsByObjectId(objectIds: string[]): void {
+  const deleteRow = db.prepare("DELETE FROM discovered_content WHERE object_id = ?");
+  for (const objectId of objectIds) {
+    deleteRow.run(objectId);
+  }
 }
 
 export function extractTitle(object: NotionObject): string {

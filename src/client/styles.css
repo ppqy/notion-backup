@@ -538,6 +538,73 @@ h2 {
   width: min(92vw, 960px);
 }
 
+.feedback-modal {
+  align-items: center;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 16px;
+  position: fixed;
+  z-index: 30;
+}
+
+.feedback-dialog {
+  background: #ffffff;
+  border: 1px solid #dde3ea;
+  border-radius: 8px;
+  box-shadow: 0 18px 45px rgba(17, 24, 39, 0.2);
+  display: grid;
+  gap: 16px;
+  max-width: 460px;
+  padding: 22px;
+  width: min(100%, 460px);
+}
+
+.feedback-title {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+}
+
+.feedback-title div {
+  display: grid;
+  gap: 6px;
+}
+
+.feedback-icon {
+  align-items: center;
+  background: #ecfdf3;
+  border-radius: 999px;
+  color: #047857;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.feedback-icon.confirm {
+  background: #e8f0ef;
+  color: #0f5f59;
+}
+
+.feedback-icon svg {
+  height: 18px;
+  width: 18px;
+}
+
+.feedback-dialog .message {
+  overflow-wrap: anywhere;
+}
+
+.feedback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .plan-editor {
   display: grid;
   gap: 16px;

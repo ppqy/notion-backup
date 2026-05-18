@@ -74,3 +74,33 @@ Run-level and item-level status badges must share one mapping helper instead of 
 ```
 
 Do not hand-map detail rows separately from history rows. When adding a new run/item status, update the shared badge helper and its tests first.
+
+### Convention: Queued Action Feedback
+
+Manual actions that enqueue background work should use an in-app confirmation dialog before the API call, then an in-app feedback dialog after the task is queued. Do not use `alert()`, browser `confirm()`, or text-only status for this enqueue path. The feedback dialog should show the queued record key/status and include a primary action that navigates to the polling list where progress is visible.
+
+```tsx
+<ConfirmActionDialog
+  title="确认手动备份"
+  message="将立即创建一个备份任务，入队后可在备份历史查看进度。"
+  detail={`计划：${plan.name} · ${plan.selectedContent.length} 个对象`}
+  confirmLabel="确认入队"
+  icon={<Play />}
+  confirmIcon={<Play />}
+  busy={runningPlanId === plan.id}
+  onConfirm={() => runManualBackup(plan)}
+  onClose={() => setConfirmingPlan(null)}
+/>
+
+<QueuedActionDialog
+  title="备份已排队"
+  message="手动备份任务已创建，备份历史会自动刷新进度。"
+  detail={`备份记录：${queuedRun.runKey} · ${statusLabel(queuedRun.status)}`}
+  actionLabel="查看备份历史"
+  actionIcon={<History />}
+  onAction={() => go("history")}
+  onClose={() => setQueuedRun(null)}
+/>
+```
+
+Use the existing `Shell` view navigation for these jumps. Keep API errors near the triggering form/action, and keep list progress polling in the target history/list view.

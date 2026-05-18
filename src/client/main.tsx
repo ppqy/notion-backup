@@ -325,8 +325,8 @@ function Shell({ onLogout }: { onLogout: () => Promise<void> }) {
       <main className="content">
         {view === "dashboard" ? <DashboardView go={setView} /> : null}
         {view === "notion" ? <NotionView /> : null}
-        {view === "plans" ? <PlansView /> : null}
-        {view === "history" ? <HistoryView /> : null}
+        {view === "plans" ? <PlansView go={setView} /> : null}
+        {view === "history" ? <HistoryView go={setView} /> : null}
         {view === "restore" ? <RestoreHistoryView /> : null}
         {view === "security" ? <SecurityView /> : null}
       </main>
@@ -597,9 +597,13 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
   );
 }
 
-function PlansView() {
+function PlansView({ go }: { go: (view: View) => void }) {
   const [plans, setPlans] = useState<BackupPlan[]>([]);
   const [editing, setEditing] = useState<BackupPlan | null | "new">(null);
+  const [confirmingPlan, setConfirmingPlan] = useState<BackupPlan | null>(null);
+  const [queuedRun, setQueuedRun] = useState<BackupRunListItem | null>(null);
+  const [runningPlanId, setRunningPlanId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const load = async () => {
@@ -611,6 +615,22 @@ function PlansView() {
   useEffect(() => {
     void load();
   }, [q, status]);
+
+  async function runManualBackup(plan: BackupPlan) {
+    setRunningPlanId(plan.id);
+    setMessage("");
+    try {
+      const queued = await endpoints.runPlan(plan.id);
+      await load();
+      setConfirmingPlan(null);
+      setQueuedRun(queued);
+    } catch (error) {
+      setConfirmingPlan(null);
+      setMessage(errorText(error));
+    } finally {
+      setRunningPlanId(null);
+    }
+  }
 
   return (
     <section>
@@ -635,6 +655,7 @@ function PlansView() {
           <option value="schedule_disabled">定时已关闭</option>
         </select>
       </div>
+      {message ? <p className="message error">{message}</p> : null}
       <div className="plan-list">
         {plans.map((plan) => (
           <article className="plan-row" key={plan.id}>
@@ -652,13 +673,13 @@ function PlansView() {
               <button
                 className="secondary"
                 type="button"
-                onClick={async () => {
-                  await endpoints.runPlan(plan.id);
-                  await load();
-                  alert("备份已排队");
+                disabled={runningPlanId === plan.id}
+                onClick={() => {
+                  setMessage("");
+                  setConfirmingPlan(plan);
                 }}
               >
-                <Play />
+                {runningPlanId === plan.id ? <Loader2 className="spin" /> : <Play />}
                 手动备份
               </button>
               <button
@@ -697,6 +718,33 @@ function PlansView() {
             </button>
           </div>
         </div>
+      ) : null}
+      {confirmingPlan ? (
+        <ConfirmActionDialog
+          title="确认手动备份"
+          message="将立即创建一个备份任务，入队后可在备份历史查看进度。"
+          detail={`计划：${confirmingPlan.name} · ${confirmingPlan.selectedContent.length} 个对象`}
+          confirmLabel="确认入队"
+          icon={<Play />}
+          confirmIcon={<Play />}
+          busy={runningPlanId === confirmingPlan.id}
+          onConfirm={() => void runManualBackup(confirmingPlan)}
+          onClose={() => setConfirmingPlan(null)}
+        />
+      ) : null}
+      {queuedRun ? (
+        <QueuedActionDialog
+          title="备份已排队"
+          message="手动备份任务已创建，备份历史会自动刷新进度。"
+          detail={`备份记录：${queuedRun.runKey} · ${statusLabel(queuedRun.status)}`}
+          actionLabel="查看备份历史"
+          actionIcon={<History />}
+          onAction={() => {
+            setQueuedRun(null);
+            go("history");
+          }}
+          onClose={() => setQueuedRun(null)}
+        />
       ) : null}
     </section>
   );
@@ -808,7 +856,7 @@ function PlanEditor({ initial, submitLabel, onSubmit }: { initial: PlanPayload; 
   );
 }
 
-function HistoryView() {
+function HistoryView({ go }: { go: (view: View) => void }) {
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof endpoints.runs>> | null>(null);
   const [detail, setDetail] = useState<BackupRunDetail | null>(null);
   const [filters, setFilters] = useState({ q: "", status: "", triggerType: "", page: 1 });
@@ -882,7 +930,7 @@ function HistoryView() {
           />
         ))}
       </div>
-      {detail ? <RunDetail detail={detail} onClose={() => setDetail(null)} /> : null}
+      {detail ? <RunDetail detail={detail} go={go} onClose={() => setDetail(null)} /> : null}
     </section>
   );
 }
@@ -1042,7 +1090,7 @@ function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: Restor
   );
 }
 
-function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () => void }) {
+function RunDetail({ detail, go, onClose }: { detail: BackupRunDetail; go: (view: View) => void; onClose: () => void }) {
   return (
     <div className="drawer" onClick={onClose}>
       <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
@@ -1072,7 +1120,7 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
             </a>
           ) : null}
         </div>
-        <RestorePanel detail={detail} />
+        <RestorePanel detail={detail} go={go} />
         <div className="table">
           {detail.items.map((item) => (
             <div className="table-row" key={item.id}>
@@ -1089,13 +1137,15 @@ function RunDetail({ detail, onClose }: { detail: BackupRunDetail; onClose: () =
   );
 }
 
-function RestorePanel({ detail }: { detail: BackupRunDetail }) {
+function RestorePanel({ detail, go }: { detail: BackupRunDetail; go: (view: View) => void }) {
   const [targetParent, setTargetParent] = useState("");
   const [restoreComments, setRestoreComments] = useState(false);
   const [restoreViews, setRestoreViews] = useState(false);
   const [report, setReport] = useState<RestoreReport | null>(null);
   const [preflight, setPreflight] = useState<RestorePreflight | null>(null);
   const [restoreRun, setRestoreRun] = useState<RestoreRunDetail | null>(null);
+  const [confirmRestoreOpen, setConfirmRestoreOpen] = useState(false);
+  const [queuedRestore, setQueuedRestore] = useState<RestoreRunDetail | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const canRestore = Boolean(detail.artifactDir && detail.manifestAvailable && ["succeeded", "partial_failed"].includes(detail.status));
@@ -1114,6 +1164,8 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     setMessage("");
     setPreflight(null);
     setRestoreRun(null);
+    setConfirmRestoreOpen(false);
+    setQueuedRestore(null);
     if (!targetParent.trim()) {
       setMessage("请输入目标父页面 URL 或 ID");
       return;
@@ -1129,12 +1181,10 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     }
   }
 
-  async function startRestore() {
+  async function queueRestore() {
     if (!targetParent.trim()) {
+      setConfirmRestoreOpen(false);
       setMessage("请输入目标父页面 URL 或 ID");
-      return;
-    }
-    if (!confirm("恢复任务会在目标父页面下创建新的 Notion 页面和数据源，不会覆盖原内容。继续入队？")) {
       return;
     }
     setBusy(true);
@@ -1142,10 +1192,13 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
     try {
       const queued = await endpoints.restoreRun(detail.id, targetParent.trim(), restoreOptions(restoreComments, restoreViews));
       setRestoreRun(queued);
+      setConfirmRestoreOpen(false);
+      setQueuedRestore(queued);
       setTargetParent("");
       setPreflight(null);
       setMessage("恢复任务已排队，可在「恢复」中查看进度");
     } catch (error) {
+      setConfirmRestoreOpen(false);
       setMessage(errorText(error));
     } finally {
       setBusy(false);
@@ -1169,6 +1222,8 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
               setRestoreComments(event.target.checked);
               setPreflight(null);
               setRestoreRun(null);
+              setConfirmRestoreOpen(false);
+              setQueuedRestore(null);
             }}
             disabled={!canRestore || busy}
           />
@@ -1182,6 +1237,8 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
               setRestoreViews(event.target.checked);
               setPreflight(null);
               setRestoreRun(null);
+              setConfirmRestoreOpen(false);
+              setQueuedRestore(null);
             }}
             disabled={!canRestore || busy}
           />
@@ -1192,7 +1249,19 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
           预检
         </button>
         {preflight ? (
-          <button className="secondary" type="button" disabled={!canRestore || busy} onClick={() => void startRestore()}>
+          <button
+            className="secondary"
+            type="button"
+            disabled={!canRestore || busy}
+            onClick={() => {
+              if (!targetParent.trim()) {
+                setMessage("请输入目标父页面 URL 或 ID");
+                return;
+              }
+              setMessage("");
+              setConfirmRestoreOpen(true);
+            }}
+          >
             <RotateCcw />
             确认入队
           </button>
@@ -1204,6 +1273,33 @@ function RestorePanel({ detail }: { detail: BackupRunDetail }) {
       {preflight ? <RestorePreflightSummary preflight={preflight} /> : null}
       {restoreRun ? <p className="message info">恢复记录：{restoreRun.restoreKey} · {restoreRunStatusLabel(restoreRun.status)}</p> : null}
       {report ? <RestoreReportSummary report={report} /> : null}
+      {confirmRestoreOpen ? (
+        <ConfirmActionDialog
+          title="确认手动恢复"
+          message="恢复会在目标父页面下创建新的 Notion 页面和数据源，不会覆盖原内容。"
+          detail={preflight ? `可恢复 ${preflight.restorableItems} 个对象 · 目标：${preflight.targetParentId}` : `来源备份：${detail.runKey}`}
+          confirmLabel="确认入队"
+          icon={<RotateCcw />}
+          confirmIcon={<RotateCcw />}
+          busy={busy}
+          onConfirm={() => void queueRestore()}
+          onClose={() => setConfirmRestoreOpen(false)}
+        />
+      ) : null}
+      {queuedRestore ? (
+        <QueuedActionDialog
+          title="恢复已排队"
+          message="手动恢复任务已创建，恢复列表会自动刷新进度。"
+          detail={`恢复记录：${queuedRestore.restoreKey} · ${restoreRunStatusLabel(queuedRestore.status)}`}
+          actionLabel="查看恢复列表"
+          actionIcon={<RotateCcw />}
+          onAction={() => {
+            setQueuedRestore(null);
+            go("restore");
+          }}
+          onClose={() => setQueuedRestore(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -1300,6 +1396,102 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ConfirmActionDialog({
+  title,
+  message,
+  detail,
+  confirmLabel,
+  icon,
+  confirmIcon,
+  busy,
+  onConfirm,
+  onClose
+}: {
+  title: string;
+  message: string;
+  detail: string;
+  confirmLabel: string;
+  icon: React.ReactNode;
+  confirmIcon: React.ReactNode;
+  busy: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const closeIfIdle = () => {
+    if (!busy) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="feedback-modal" onClick={closeIfIdle}>
+      <section className="feedback-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="feedback-title">
+          <span className="feedback-icon confirm">{icon}</span>
+          <div>
+            <h2>{title}</h2>
+            <p className="muted">{message}</p>
+          </div>
+        </div>
+        <p className="message info">{detail}</p>
+        <div className="feedback-actions">
+          <button className="ghost" type="button" disabled={busy} onClick={onClose}>
+            取消
+          </button>
+          <button className="primary" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? <Loader2 className="spin" /> : confirmIcon}
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function QueuedActionDialog({
+  title,
+  message,
+  detail,
+  actionLabel,
+  actionIcon,
+  onAction,
+  onClose
+}: {
+  title: string;
+  message: string;
+  detail: string;
+  actionLabel: string;
+  actionIcon: React.ReactNode;
+  onAction: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="feedback-modal" onClick={onClose}>
+      <section className="feedback-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="feedback-title">
+          <span className="feedback-icon">
+            <CheckCircle2 />
+          </span>
+          <div>
+            <h2>{title}</h2>
+            <p className="muted">{message}</p>
+          </div>
+        </div>
+        <p className="message info">{detail}</p>
+        <div className="feedback-actions">
+          <button className="ghost" type="button" onClick={onClose}>
+            稍后查看
+          </button>
+          <button className="primary" type="button" onClick={onAction}>
+            {actionIcon}
+            {actionLabel}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

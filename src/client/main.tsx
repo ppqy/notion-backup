@@ -41,6 +41,11 @@ import { itemStatusBadgeStatus, StatusBadge } from "./statusBadge";
 import "./styles.css";
 
 type View = "dashboard" | "notion" | "plans" | "history" | "restore" | "security";
+type BackupRunListItem = Awaited<ReturnType<typeof endpoints.runs>>["items"][number];
+type RestoreRunListItem = Awaited<ReturnType<typeof endpoints.restores>>["items"][number];
+type DashboardData = Awaited<ReturnType<typeof endpoints.dashboard>> & {
+  latestRestore: RestoreRunListItem | null;
+};
 
 const defaultPlan: PlanPayload = {
   name: "",
@@ -339,9 +344,16 @@ function NavButton({ icon, label, active, onClick }: { icon: React.ReactNode; la
 }
 
 function DashboardView({ go }: { go: (view: View) => void }) {
-  const [data, setData] = useState<Awaited<ReturnType<typeof endpoints.dashboard>> | null>(null);
+  const [data, setData] = useState<DashboardData | null>(null);
   useEffect(() => {
-    const load = () => endpoints.dashboard().then(setData);
+    const load = async () => {
+      const restoreParams = new URLSearchParams({ page: "1", pageSize: "10" });
+      const [dashboard, restores] = await Promise.all([endpoints.dashboard(), endpoints.restores(restoreParams)]);
+      setData({
+        ...dashboard,
+        latestRestore: restores.items[0] ?? null
+      });
+    };
     void load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
@@ -374,6 +386,15 @@ function DashboardView({ go }: { go: (view: View) => void }) {
           </button>
         </div>
         {data.latestRun ? <RunRow run={data.latestRun} /> : <p className="muted">暂无备份记录</p>}
+      </section>
+      <section className="section">
+        <div className="section-header">
+          <h2>最近恢复</h2>
+          <button className="secondary" type="button" onClick={() => go("restore")}>
+            查看恢复
+          </button>
+        </div>
+        {data.latestRestore ? <RestoreRunRow run={data.latestRestore} /> : <p className="muted">暂无恢复记录</p>}
       </section>
       <section className="section">
         <div className="section-header">
@@ -934,7 +955,7 @@ function RestoreRunRow({
   onClick,
   actions
 }: {
-  run: Awaited<ReturnType<typeof endpoints.restores>>["items"][number];
+  run: RestoreRunListItem;
   onClick?: () => void;
   actions?: React.ReactNode;
 }) {
@@ -1356,7 +1377,7 @@ function PanelLoading() {
   );
 }
 
-function RunRow({ run, onClick, actions }: { run: Awaited<ReturnType<typeof endpoints.runs>>["items"][number]; onClick?: () => void; actions?: React.ReactNode }) {
+function RunRow({ run, onClick, actions }: { run: BackupRunListItem; onClick?: () => void; actions?: React.ReactNode }) {
   return (
     <article className={`run-row ${onClick ? "clickable" : ""}`} onClick={onClick}>
       <StatusBadge status={run.status} />

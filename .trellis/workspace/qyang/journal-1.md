@@ -372,7 +372,10 @@ Implemented restore of downloaded Notion/local files through Notion File Uploads
 
 ### Main Changes
 
-(Add details)
+- Added README restore workflow documentation for preflight, queued jobs, progress, cancellation, and restore history.
+- Documented implemented restore coverage for pages, data sources, properties, downloaded files, comments, views, and restore reports.
+- Documented current restore limitations and future work in both README languages.
+- Archived task-local restore gap research for future planning.
 
 ### Git Commits
 
@@ -382,7 +385,10 @@ Implemented restore of downloaded Notion/local files through Notion File Uploads
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `git diff --check`
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
 
 ### Status
 
@@ -511,6 +517,39 @@ Implemented best-effort Notion comment restore, surfaced comment permission diag
 | Hash | Message |
 |------|---------|
 | `0bb99d1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 15: Document backup restore status
+
+**Date**: 2026-05-18
+**Task**: Document backup restore status
+**Branch**: `main`
+
+### Summary
+
+Updated English and Chinese README docs with implemented backup/restore coverage, restore workflow, current restore limitations, and recorded future restore gaps in Trellis research.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `37b16dd` | (see git log) |
 
 ### Testing
 

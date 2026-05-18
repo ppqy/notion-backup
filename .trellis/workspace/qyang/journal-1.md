@@ -603,3 +603,36 @@ Fixed stale Notion discovery cache reconciliation, canceled status badge renderi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Dashboard latest restore summary
+
+**Date**: 2026-05-18
+**Task**: Dashboard latest restore summary
+**Branch**: `main`
+
+### Summary
+
+Added a latest restore section to the dashboard overview, reusing the restore run row UI and linking to the restore page. Verified with lint, build, and tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `26dca7e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

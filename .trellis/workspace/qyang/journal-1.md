@@ -636,3 +636,36 @@ Added a latest restore section to the dashboard overview, reusing the restore ru
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Unified backup restore feedback navigation
+
+**Date**: 2026-05-18
+**Task**: Unified backup restore feedback navigation
+**Branch**: `main`
+
+### Summary
+
+Added unified in-app confirmation and queued feedback dialogs for manual backup and restore flows, with navigation to progress lists.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `007b9ac` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

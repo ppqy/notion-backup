@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
+- **Total Sessions**: 16
 - **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~558 | Active |
+| `journal-1.md` | ~599 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-05-18 | Fix Notion discovery and canceled states | `1ccf521`, `2811350`, `07441f9` | `main` |
 | 15 | 2026-05-18 | Document backup restore status | `37b16dd` | `main` |
 | 14 | 2026-05-15 | Restore backed-up Notion comments | `0bb99d1` | `main` |
 | 13 | 2026-05-15 | Restore Notion data source views | `7499b47` | `main` |

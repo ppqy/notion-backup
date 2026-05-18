@@ -411,7 +411,10 @@ Added versioned backup manifest metadata, restore options persistence, extensibl
 
 ### Main Changes
 
-(Add details)
+- Reconciled Notion search-discovered content during refresh so stale deleted or inaccessible search rows are removed while manually added accessible rows remain.
+- Centralized status badge mapping so canceled/skipped backup and restore detail items render with a static canceled icon instead of a spinner.
+- Changed SPA static fallback so missing hashed assets return 404 instead of `index.html`, avoiding module MIME type errors after rebuilds.
+- Updated backend/frontend specs with the discovery cache, static fallback, and status badge contracts.
 
 ### Git Commits
 
@@ -421,7 +424,10 @@ Added versioned backup manifest metadata, restore options persistence, extensibl
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test`
+- [OK] `npm run build`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -550,6 +556,41 @@ Updated English and Chinese README docs with implemented backup/restore coverage
 | Hash | Message |
 |------|---------|
 | `37b16dd` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 16: Fix Notion discovery and canceled states
+
+**Date**: 2026-05-18
+**Task**: Fix Notion discovery and canceled states
+**Branch**: `main`
+
+### Summary
+
+Fixed stale Notion discovery cache reconciliation, canceled status badge rendering in detail views, and static asset fallback behavior; added regression tests and updated specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1ccf521` | (see git log) |
+| `2811350` | (see git log) |
+| `07441f9` | (see git log) |
 
 ### Testing
 

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~704 | Active |
+| `journal-1.md` | ~742 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-05-18 | Optimize restore warning summaries | `a084aa1` | `main` |
 | 19 | 2026-05-18 | Notion token setup guidance | `e42faa7` | `main` |
 | 18 | 2026-05-18 | Unified backup restore feedback navigation | `007b9ac` | `main` |
 | 17 | 2026-05-18 | Dashboard latest restore summary | `26dca7e` | `main` |

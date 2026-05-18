@@ -707,3 +707,36 @@ Added shared Notion token input guidance with a quick link to the official Notio
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Optimize restore warning summaries
+
+**Date**: 2026-05-18
+**Task**: Optimize restore warning summaries
+**Branch**: `main`
+
+### Summary
+
+Added grouped restore warning summaries across shared DTOs, restore preflight/report generation, manifest normalization, and frontend display while preserving raw warning details.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a084aa1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

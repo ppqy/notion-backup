@@ -675,6 +675,8 @@ app.post("/api/runs/:id/restore", async (request) => {
 * Restore enqueue must store normalized restore options in `restore_runs.options_json`.
 * Restore execution must write selected restore options into the restore manifest/report.
 * Restore progress/completion must store extensible summary metrics in `restore_runs.summary_json` while keeping fixed dashboard counter columns populated.
+* Restore preflight should distinguish directly selected pages from data source internal entry pages. `RestorePreflight.pages` counts selected page items; `RestorePreflight.dataSourceEntryPages` counts restorable page entries inside selected data sources.
+* Restore reports should preserve `summary.createdDataSourceEntryPages` so UI can show how many restored pages were created under data sources. `summary.createdPages` remains the total page count for compatibility; UI labels for standalone pages should display `createdPages - createdDataSourceEntryPages`.
 * Restore report readers must default missing future mapping buckets to `{}` and missing numeric summary fields to `0`.
 
 ### 4. Validation & Error Matrix

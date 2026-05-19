@@ -62,3 +62,52 @@ UPDATE backup_plans
 SET deleted_at = ?, schedule_enabled = 0, next_run_at = NULL
 WHERE id = ?;
 ```
+
+## Scenario: Discovered Notion Parent Metadata
+
+### 1. Scope / Trigger
+- Trigger: Any change to Notion discovery cache mapping, `DiscoveredContent`, or UI grouping based on Notion parent relationships.
+
+### 2. Signatures
+- SQLite column: `discovered_content.parent_json TEXT`
+- Shared DTO fields:
+  - `DiscoveredContent.parent: string | null` keeps the raw serialized parent object for compatibility/debugging.
+  - `DiscoveredContent.parentType: "workspace" | "page" | "data_source" | "database" | "block" | "unknown" | null`
+  - `DiscoveredContent.parentId: string | null`
+
+### 3. Contracts
+- Repository mapping is responsible for parsing `parent_json`; frontend code must not parse SQLite-shaped data.
+- Workspace parents map to `{ parentType: "workspace", parentId: null }`.
+- Parent ID objects such as `page_id`, `data_source_id`, `database_id`, and `block_id` map to display-safe parent types and IDs.
+- Unknown parent shapes must not fail discovery listing; map them to `parentType: "unknown"` and keep any recognized fallback ID when available.
+
+### 4. Validation & Error Matrix
+- Missing `parent_json` -> `parentType: null`, `parentId: null`.
+- Invalid JSON in `parent_json` -> `parentType: null`, `parentId: null`.
+- Known parent type with non-string ID -> known `parentType`, `parentId: null`.
+- Unknown parent type -> `parentType: "unknown"`, best-effort `parentId`.
+
+### 5. Good/Base/Bad Cases
+- Good: UI groups child pages/data-source entries using `parentId` from the shared DTO.
+- Base: objects whose parent is not in the current discovered result remain visible and selectable.
+- Bad: recursively crawl all block children during refresh just to build the settings list hierarchy.
+- Bad: parse raw `parent_json` independently in React components.
+
+### 6. Tests Required
+- Repository tests for workspace, page, data source/database, block, invalid, and unknown parent shapes when parser behavior changes.
+- Frontend tree/grouping tests when display hierarchy behavior changes.
+- `npm run lint`, `npm run build`, and `npm test` after changing shared DTO fields.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```tsx
+const parent = JSON.parse(item.parent ?? "{}");
+```
+
+#### Correct
+```tsx
+if (item.parentId && discoveredById.has(item.parentId)) {
+  // Group under the discovered parent using shared DTO fields.
+}
+```

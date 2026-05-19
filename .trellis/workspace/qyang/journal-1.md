@@ -488,7 +488,9 @@ Implemented opt-in restore for backed-up Notion data source views with manifest/
 
 ### Main Changes
 
-(Add details)
+- Grouped discovered Notion content by parsed `parent_json` metadata so pages/data sources are no longer shown only as a flat list.
+- Added restore preflight/report metrics for data source internal pages and adjusted UI labels so standalone pages and internal entry pages are shown separately.
+- Documented the Notion discovery parent contract and restore metric contract in Trellis specs.
 
 ### Git Commits
 
@@ -498,7 +500,9 @@ Implemented opt-in restore for backed-up Notion data source views with manifest/
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm test` (71 passed)
+- [OK] `npm run build`
 
 ### Status
 
@@ -728,6 +732,40 @@ Added grouped restore warning summaries across shared DTOs, restore preflight/re
 | Hash | Message |
 |------|---------|
 | `a084aa1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 21: Group Notion content and restore metrics
+
+**Date**: 2026-05-19
+**Task**: Group Notion content and restore metrics
+**Branch**: `main`
+
+### Summary
+
+Grouped discovered Notion pages and data sources by parent metadata, added restore preflight/report counts for data source internal pages, and documented the discovery/restore metric contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `34e06dd` | (see git log) |
+| `6194384` | (see git log) |
 
 ### Testing
 

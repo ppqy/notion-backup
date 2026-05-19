@@ -9,6 +9,7 @@ export function defaultRestoreOptions(): RestoreOptions {
 export function defaultRestoreReportSummary(overrides: Partial<RestoreReportSummary> = {}): RestoreReportSummary {
   return {
     createdPages: 0,
+    createdDataSourceEntryPages: 0,
     createdDataSources: 0,
     createdBlocks: 0,
     createdViews: 0,

@@ -803,6 +803,12 @@ describe("restore preflight", () => {
   it("summarizes restorable items and artifact warnings without writing to Notion", async () => {
     const runDir = await mkdtemp(path.join(tmpdir(), "restore-summary-"));
     await writeFile(path.join(runDir, "manifest.json"), "{}\n", "utf8");
+    await mkdir(path.join(runDir, "data-sources", "data-source-1"), { recursive: true });
+    await writeFile(
+      path.join(runDir, "data-sources", "data-source-1", "entries.json"),
+      JSON.stringify([{ id: "entry-page-1" }, { id: "entry-page-2" }, { object: "page" }]),
+      "utf8"
+    );
     const summary = summarizeRestorePreflight(
       {
         id: "run-1",
@@ -837,6 +843,7 @@ describe("restore preflight", () => {
       restorableItems: 2,
       skippedItems: 1,
       pages: 1,
+      dataSourceEntryPages: 2,
       dataSources: 1
     });
     expect(summary.warnings.map((warning) => warning.code)).toContain("page_artifact_missing");

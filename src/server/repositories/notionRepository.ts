@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { decryptText, encryptText, maskToken } from "../crypto.js";
 import { nowIso } from "../time.js";
 import { parseJson, stringifyJson } from "../json.js";
-import type { DiscoveredContent, NotionConnectionStatus, NotionObjectType } from "../../shared/types.js";
+import type { DiscoveredContent, NotionConnectionStatus, NotionObjectType, NotionParentType } from "../../shared/types.js";
 import type { NotionObject } from "../notionClient.js";
 
 type ConnectionRow = {
@@ -245,16 +245,50 @@ function plainText(parts: unknown[]): string {
 }
 
 function mapContentRow(row: ContentRow): DiscoveredContent {
+  const parent = parseDiscoveredParent(row.parent_json);
   return {
     id: row.id,
     objectId: row.object_id,
     objectType: row.object_type,
     title: row.title,
     parent: row.parent_json,
+    parentType: parent?.type ?? null,
+    parentId: parent?.id ?? null,
     url: row.url,
     lastEditedTime: row.last_edited_time,
     source: row.source,
     discoveredAt: row.discovered_at,
     updatedAt: row.updated_at
   };
+}
+
+export function parseDiscoveredParent(parentJson: string | null): { type: NotionParentType; id: string | null } | null {
+  const parent = parseJson<Record<string, unknown> | null>(parentJson, null);
+  if (!parent) {
+    return null;
+  }
+
+  const rawType = typeof parent.type === "string" ? parent.type : null;
+  if (rawType === "workspace") {
+    return { type: "workspace", id: null };
+  }
+
+  const knownParentTypes: Record<string, NotionParentType> = {
+    page_id: "page",
+    data_source_id: "data_source",
+    database_id: "database",
+    block_id: "block"
+  };
+  if (rawType && rawType in knownParentTypes) {
+    const id = parent[rawType];
+    return {
+      type: knownParentTypes[rawType],
+      id: typeof id === "string" ? id : null
+    };
+  }
+
+  const fallbackId = ["page_id", "data_source_id", "database_id", "block_id"]
+    .map((key) => parent[key])
+    .find((value): value is string => typeof value === "string");
+  return { type: "unknown", id: fallbackId ?? null };
 }

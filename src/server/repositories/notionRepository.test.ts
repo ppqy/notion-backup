@@ -80,6 +80,45 @@ describe("notion repository discovery cache", () => {
     expect(result.items).toEqual([]);
     expect(result.total).toBe(0);
   });
+
+  it("maps Notion parent objects into typed parent metadata", async () => {
+    const repository = await loadRepository();
+
+    repository.upsertDiscoveredContent(
+      [
+        page("parent-page", "Parent"),
+        page("child-page", "Child", { type: "page_id", page_id: "parent-page" }),
+        page("entry-page", "Entry", { type: "data_source_id", data_source_id: "source-id" }),
+        dataSource("source-id", "Source")
+      ],
+      "search"
+    );
+
+    const result = repository.listDiscoveredContent({ limit: 10, offset: 0 });
+
+    expect(result.items.find((item) => item.objectId === "parent-page")).toMatchObject({
+      parentType: "workspace",
+      parentId: null
+    });
+    expect(result.items.find((item) => item.objectId === "child-page")).toMatchObject({
+      parentType: "page",
+      parentId: "parent-page"
+    });
+    expect(result.items.find((item) => item.objectId === "entry-page")).toMatchObject({
+      parentType: "data_source",
+      parentId: "source-id"
+    });
+  });
+
+  it("falls back gracefully for unknown parent shapes", async () => {
+    const repository = await loadRepository();
+
+    expect(repository.parseDiscoveredParent(JSON.stringify({ type: "collection_id", database_id: "database-id" }))).toEqual({
+      type: "unknown",
+      id: "database-id"
+    });
+    expect(repository.parseDiscoveredParent("not json")).toBeNull();
+  });
 });
 
 async function loadRepository(): Promise<LoadedRepository> {
@@ -98,7 +137,7 @@ async function loadRepository(): Promise<LoadedRepository> {
   return loaded;
 }
 
-function page(id: string, title: string): NotionObject {
+function page(id: string, title: string, parent: Record<string, unknown> = { type: "workspace", workspace: true }): NotionObject {
   return {
     object: "page",
     id,
@@ -108,7 +147,18 @@ function page(id: string, title: string): NotionObject {
         title: [{ plain_text: title }]
       }
     },
-    parent: { type: "workspace", workspace: true },
+    parent,
+    url: `https://notion.so/${id}`,
+    last_edited_time: "2026-05-18T00:00:00.000Z"
+  };
+}
+
+function dataSource(id: string, title: string, parent: Record<string, unknown> = { type: "workspace", workspace: true }): NotionObject {
+  return {
+    object: "data_source",
+    id,
+    name: title,
+    parent,
     url: `https://notion.so/${id}`,
     last_edited_time: "2026-05-18T00:00:00.000Z"
   };

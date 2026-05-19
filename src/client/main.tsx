@@ -2,11 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CalendarClock,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
   Database,
   Download,
   ExternalLink,
   FileArchive,
+  FileText,
+  FolderTree,
   History,
   Home,
   KeyRound,
@@ -39,6 +43,7 @@ import type {
   SelectedContent
 } from "../shared/types";
 import { endpoints, type PlanPayload } from "./api";
+import { buildDiscoveryTree, flattenDiscoveryTree, type DiscoveryDisplayRow } from "./discoveryTree";
 import { itemStatusBadgeStatus, StatusBadge } from "./statusBadge";
 import "./styles.css";
 
@@ -516,6 +521,7 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [manual, setManual] = useState("");
+  const [expandedObjectIds, setExpandedObjectIds] = useState<Set<string>>(() => new Set());
 
   const load = async () => {
     const params = new URLSearchParams({ page: "1", pageSize: "100" });
@@ -554,6 +560,24 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
     }
   }
 
+  const discoveryTree = useMemo(() => buildDiscoveryTree(data), [data]);
+  const displayRows = useMemo(
+    () => flattenDiscoveryTree(discoveryTree, expandedObjectIds, Boolean(q || type)),
+    [discoveryTree, expandedObjectIds, q, type]
+  );
+
+  function toggleExpanded(objectId: string) {
+    setExpandedObjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(objectId)) {
+        next.delete(objectId);
+      } else {
+        next.add(objectId);
+      }
+      return next;
+    });
+  }
+
   return (
     <section className="section">
       <div className="section-header">
@@ -584,28 +608,111 @@ function DiscoveryPanel({ selectable, selected, onToggle }: { selectable?: boole
       {lastRefreshedAt ? <p className="muted">上次刷新：{formatDate(lastRefreshedAt)}</p> : null}
       {message ? <p className={message.includes("已") ? "message success" : "message error"}>{message}</p> : null}
       <div className="table">
-        {data.map((item) => {
-          const checked = selected?.some((content) => content.objectId === item.objectId) ?? false;
-          return (
-            <div className={`table-row ${selectable ? "" : "without-selector"}`} key={item.objectId}>
-              {selectable ? (
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => onToggle?.({ objectId: item.objectId, objectType: item.objectType, title: item.title })}
-                />
-              ) : null}
+        {displayRows.length === 0 ? <div className="empty-inline">暂无可备份内容</div> : null}
+        {displayRows.map((row) =>
+          row.kind === "group" ? (
+            <div className="discovery-group-row" key={row.id}>
+              <FolderTree />
               <div>
-                <strong>{item.title}</strong>
-                <p className="muted">{item.objectType === "page" ? "页面" : "数据源"} · {item.lastEditedTime ? formatDate(item.lastEditedTime) : "无编辑时间"}</p>
+                <strong>{row.title}</strong>
+                <p className="muted">{row.description}</p>
               </div>
-              <span className="muted source">{item.source === "manual" ? "来源：手动添加" : "来源：自动发现"}</span>
+              <span className="muted source">{row.count} 项</span>
             </div>
-          );
-        })}
+          ) : (
+            <DiscoveryContentRow
+              key={row.item.objectId}
+              row={row}
+              selectable={selectable}
+              selected={selected}
+              onToggle={onToggle}
+              onToggleExpanded={toggleExpanded}
+            />
+          )
+        )}
       </div>
     </section>
   );
+}
+
+function DiscoveryContentRow({
+  row,
+  selectable,
+  selected,
+  onToggle,
+  onToggleExpanded
+}: {
+  row: Extract<DiscoveryDisplayRow, { kind: "item" }>;
+  selectable?: boolean;
+  selected?: SelectedContent[];
+  onToggle?: (item: SelectedContent) => void;
+  onToggleExpanded: (objectId: string) => void;
+}) {
+  const item = row.item;
+  const checked = selected?.some((content) => content.objectId === item.objectId) ?? false;
+  return (
+    <div className={`table-row discovery-row ${selectable ? "" : "without-selector"}`} style={{ paddingLeft: `${12 + row.depth * 24}px` }}>
+      {selectable ? (
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggle?.({ objectId: item.objectId, objectType: item.objectType, title: item.title })}
+        />
+      ) : null}
+      <div className="discovery-title-cell">
+        {row.canExpand ? (
+          <button
+            aria-label={row.expanded ? `收起 ${item.title}` : `展开 ${item.title}`}
+            className="ghost icon-button discovery-toggle"
+            title={row.expanded ? "收起子内容" : "展开子内容"}
+            type="button"
+            onClick={() => onToggleExpanded(item.objectId)}
+          >
+            {row.expanded ? <ChevronDown /> : <ChevronRight />}
+          </button>
+        ) : (
+          <span className="discovery-toggle-spacer" />
+        )}
+        <span className={`discovery-object-icon ${item.objectType}`}>{item.objectType === "page" ? <FileText /> : <Database />}</span>
+        <div className="discovery-copy">
+          <strong>{item.title}</strong>
+          <p className="muted">{discoveryMetaText(item, row.childCount)}</p>
+        </div>
+      </div>
+      <span className="muted source">{item.source === "manual" ? "来源：手动添加" : "来源：自动发现"}</span>
+    </div>
+  );
+}
+
+function discoveryMetaText(item: DiscoveredContent, childCount: number): string {
+  const parts = [
+    item.objectType === "page" ? "页面" : "数据源",
+    parentLocationLabel(item),
+    item.lastEditedTime ? formatDate(item.lastEditedTime) : "无编辑时间"
+  ];
+  if (childCount > 0) {
+    parts.push(`包含 ${childCount} 项`);
+  }
+  return parts.join(" · ");
+}
+
+function parentLocationLabel(item: DiscoveredContent): string {
+  switch (item.parentType) {
+    case "workspace":
+      return "顶层";
+    case "page":
+      return "位于页面内";
+    case "data_source":
+      return "位于数据源内";
+    case "database":
+      return "位于数据库内";
+    case "block":
+      return "位于区块内";
+    case "unknown":
+      return "父级未知";
+    default:
+      return item.parentId ? "父级未显示" : "顶层";
+  }
 }
 
 function PlansView({ go }: { go: (view: View) => void }) {
@@ -1043,6 +1150,8 @@ function RestoreRunRow({
 function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: RestoreRunDetail; onClose: () => void; onChanged: () => Promise<void> }) {
   const createdViews = detail.summaryMetrics?.createdViews ?? detail.report?.summary.createdViews ?? 0;
   const createdComments = detail.summaryMetrics?.createdComments ?? detail.report?.summary.createdComments ?? 0;
+  const createdDataSourceEntryPages = detail.summaryMetrics?.createdDataSourceEntryPages ?? detail.report?.summary.createdDataSourceEntryPages ?? 0;
+  const createdStandalonePages = standalonePageCount(detail.createdPages, createdDataSourceEntryPages);
   return (
     <div className="drawer" onClick={onClose}>
       <section className="drawer-panel" onClick={(event) => event.stopPropagation()}>
@@ -1058,7 +1167,8 @@ function RestoreRunDetailDrawer({ detail, onClose, onChanged }: { detail: Restor
           <span className="muted">来源备份：{detail.sourceRunKey}</span>
         </div>
         <div className="metrics compact">
-          <Metric label="新建页面" value={String(detail.createdPages)} />
+          <Metric label="新建页面" value={String(createdStandalonePages)} />
+          <Metric label="新建内部页面" value={String(createdDataSourceEntryPages)} />
           <Metric label="新建数据源" value={String(detail.createdDataSources)} />
           <Metric label="新建区块" value={String(detail.createdBlocks)} />
           <Metric label="新建视图" value={String(createdViews)} />
@@ -1331,6 +1441,7 @@ function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight })
       <div className="metrics compact">
         <Metric label="可恢复" value={String(preflight.restorableItems)} />
         <Metric label="页面" value={String(preflight.pages)} />
+        <Metric label="内部页面" value={String(preflight.dataSourceEntryPages)} />
         <Metric label="数据源" value={String(preflight.dataSources)} />
         <Metric label="评论" value={preflight.options.restoreComments ? "恢复" : "跳过"} />
         <Metric label="视图" value={preflight.options.restoreViews ? "恢复" : "跳过"} />
@@ -1344,11 +1455,14 @@ function RestorePreflightSummary({ preflight }: { preflight: RestorePreflight })
 
 function RestoreReportSummary({ report }: { report: RestoreReport }) {
   const errors = report.errors.slice(0, 5);
+  const createdDataSourceEntryPages = report.summary.createdDataSourceEntryPages ?? 0;
+  const createdStandalonePages = standalonePageCount(report.summary.createdPages, createdDataSourceEntryPages);
   return (
     <div className="restore-report">
       <div className="metrics compact">
         <Metric label="状态" value={restoreStatusLabel(report.status)} />
-        <Metric label="新建页面" value={String(report.summary.createdPages)} />
+        <Metric label="新建页面" value={String(createdStandalonePages)} />
+        <Metric label="新建内部页面" value={String(createdDataSourceEntryPages)} />
         <Metric label="新建数据源" value={String(report.summary.createdDataSources ?? 0)} />
         <Metric label="新建区块" value={String(report.summary.createdBlocks)} />
         <Metric label="新建视图" value={String(report.summary.createdViews ?? 0)} />
@@ -1387,6 +1501,10 @@ function RestoreReportSummary({ report }: { report: RestoreReport }) {
       ) : null}
     </div>
   );
+}
+
+function standalonePageCount(totalPages: number, dataSourceEntryPages: number): number {
+  return Math.max(0, totalPages - dataSourceEntryPages);
 }
 
 function WarningSummarySections({

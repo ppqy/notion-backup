@@ -67,6 +67,7 @@ describe("restore report compatibility", () => {
     expect(parseRestoreOptionsJson('{"restoreComments":false,"restoreViews":false,"importExternalUrls":false,"relationStrategy":"mapped_only"}')).toEqual(DEFAULT_RESTORE_OPTIONS);
     expect(parseRestoreSummaryJson('{"createdPages":2,"createdViews":3,"createdComments":4}')).toMatchObject({
       createdPages: 2,
+      createdDataSourceEntryPages: 0,
       createdViews: 3,
       createdComments: 4,
       createdDataSources: 0,

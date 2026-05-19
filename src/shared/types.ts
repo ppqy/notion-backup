@@ -29,12 +29,16 @@ export type ApiErrorResponse = {
 
 export type NotionObjectType = "page" | "data_source";
 
+export type NotionParentType = "workspace" | "page" | "data_source" | "database" | "block" | "unknown";
+
 export type DiscoveredContent = {
   id: string;
   objectId: string;
   objectType: NotionObjectType;
   title: string;
   parent: string | null;
+  parentType: NotionParentType | null;
+  parentId: string | null;
   url: string | null;
   lastEditedTime: string | null;
   source: "search" | "manual";
@@ -208,6 +212,7 @@ export type RestoreItemResult = {
 
 export type RestoreReportSummary = {
   createdPages: number;
+  createdDataSourceEntryPages: number;
   createdDataSources: number;
   createdBlocks: number;
   skippedItems: number;
@@ -299,6 +304,7 @@ export type RestorePreflight = {
   restorableItems: number;
   skippedItems: number;
   pages: number;
+  dataSourceEntryPages: number;
   dataSources: number;
   options: RestoreOptions;
   backupManifest: BackupManifestMetadata;

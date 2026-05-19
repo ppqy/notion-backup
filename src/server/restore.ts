@@ -258,6 +258,7 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
     });
   }
   let pages = 0;
+  let dataSourceEntryPages = 0;
   let dataSources = 0;
   let restorableItems = 0;
   let skippedItems = 0;
@@ -302,6 +303,7 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
     } else if (options.restoreComments) {
       warnings.push(...commentPreflightWarningsForDataSource(runDir, item.objectId, item.title));
     }
+    dataSourceEntryPages += countDataSourceEntryPages(runDir, item.objectId);
     if (options.restoreViews) {
       const artifact = readDataSourceViewsArtifactSync(runDir, item.objectId);
       if (!artifact) {
@@ -337,6 +339,7 @@ export function summarizeRestorePreflight(run: Pick<BackupRunDetail, "id" | "run
     restorableItems,
     skippedItems,
     pages,
+    dataSourceEntryPages,
     dataSources,
     options,
     backupManifest,
@@ -520,6 +523,9 @@ async function restorePageArtifact(context: RestoreContext, pageId: string, pare
     }
     context.report.mappings.pages[pageId] = restoredPageId;
     context.report.summary.createdPages += 1;
+    if (parent.type === "data_source_id") {
+      context.report.summary.createdDataSourceEntryPages = (context.report.summary.createdDataSourceEntryPages ?? 0) + 1;
+    }
     await appendBlocks(context, restoredPageId, artifact.blocks, pageId);
     if (context.report.options.restoreComments) {
       await restorePageComments(context, pageId, artifact);
@@ -1120,6 +1126,14 @@ function readDataSourceEntriesSync(runDir: string, dataSourceId: string): Notion
   } catch {
     return null;
   }
+}
+
+function countDataSourceEntryPages(runDir: string, dataSourceId: string): number {
+  const entries = readDataSourceEntriesSync(runDir, dataSourceId);
+  if (!entries) {
+    return 0;
+  }
+  return entries.filter((entry) => readNotionObjectId(entry)).length;
 }
 
 function commentPreflightWarningsForPage(runDir: string, pageId: string, title: string): RestoreWarning[] {
